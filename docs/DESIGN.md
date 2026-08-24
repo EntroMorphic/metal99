@@ -1,0 +1,550 @@
+# metal99 — Design Specification
+
+**Zero-dependency, pure ISO C99 graphics runtime for the Waveshare
+ESP32-S3-Touch-AMOLED-1.8.**
+
+Status: Milestone 1 complete and verified on hardware. Milestones 2+ specified
+here, not yet built.
+Last updated: 2026-08-24.
+
+---
+
+## 1. Purpose
+
+Drive the board's 368x448 QSPI AMOLED from bare metal, with a message-passing
+graphics layer on top, under two absolute constraints:
+
+1. **Pure ISO C99.** Every source file compiles under
+   `-std=c99 -pedantic-errors -Wall -Wextra -Werror`.
+2. **Zero dependencies.** No ESP-IDF, no FreeRTOS, no libc, no ROM function
+   calls. Our code talks to silicon directly.
+
+The compiler, linker, and `esptool` (image packer) are *build tools*, not
+runtime dependencies. `libgcc` is linked for compiler intrinsics such as
+`__udivsi3`; this is the compiler's runtime, not a third-party library.
+
+### 1.1 Non-goals
+
+Explicitly out of scope, with reasons:
+
+| Excluded | Reason |
+|---|---|
+| **PSRAM** | Octal PSRAM timing training is the single hardest part of a from-scratch S3 bring-up. Band rendering into internal SRAM is *already* the faster architecture (measured §4), so skipping PSRAM removes the largest risk at no cost. |
+| **Interrupts** | Poll the SPI2 done bit. No vector table, no exception handlers, no `xt_ints`. |
+| **240 MHz clock** | Stay at the ROM default until correctness is proven. Clock is a later multiplier, not a prerequisite. |
+| **Flash XIP / MMU / cache** | Image is RAM-resident. No cache configuration means no cache-coherency class of bug. |
+| **BitNet / ML** | Out of scope for this project. |
+| **Wi-Fi / BT** | Would require Espressif's closed-source blobs, violating constraint 2. |
+
+---
+
+## 2. Verified hardware facts
+
+Everything in this section was read off the device or its stock firmware during
+bring-up. Nothing here is quoted from a datasheet unless marked.
+
+### 2.1 Silicon
+
+| Property | Value | How verified |
+|---|---|---|
+| Chip | ESP32-S3 (QFN56) rev v0.2 | esptool chip probe |
+| Cores | 2x Xtensa LX7 @ up to 240 MHz + ULP | eFuse `DIS_APP_CPU = False` |
+| PSRAM | 8 MB octal, AP_3v3, 80 MHz | eFuse `PSRAM_CAP`, boot log |
+| Flash | 16 MB quad, Winbond `ef:4018` | esptool flash probe |
+| MAC | `30:ed:a0:ac:91:54` | esptool |
+| Console | **USB-Serial-JTAG only — no UART bridge** | `lsusb` VID:PID `303a:1001` |
+
+### 2.2 Display
+
+| Property | Value |
+|---|---|
+| Controller | **SH8601** (NOT CO5300 — see §2.3) |
+| Resolution | 368 x 448 |
+| Interface | QSPI on SPI2, 40 MHz, SPI mode 0 |
+| Pixel format | RGB565, **big-endian on the wire** (byte-swapped) |
+| Reset pin | **None** (`BSP_LCD_RST = GPIO_NUM_NC`) |
+
+Pin map:
+
+| Signal | GPIO |
+|---|---|
+| CS | 12 |
+| CLK (PCLK) | 11 |
+| D0 | 4 |
+| D1 | 5 |
+| D2 | 6 |
+| D3 | 7 |
+
+> **Routing consequence.** The IO_MUX defaults for these pins are
+> `GPIO11 = FSPID` and `GPIO12 = FSPICLK` — the board wires them the *other way
+> round* (11 = CLK, 12 = CS). Direct IO_MUX routing is therefore **impossible**;
+> all six signals must go through the **GPIO matrix**. See §6.3.
+
+### 2.3 Board revision trap
+
+This unit is the **original** revision: SH8601 display + FT3168 touch.
+Waveshare's BSP switched to CO5300/CST816 at version **2.0.3**, and every
+ESP-IDF example pins `^2.0.3`. Those builds succeed and drive the *wrong panel*
+— producing a dark or garbled screen with **no error message**.
+
+Relevant here because the SH8601 init sequence in §6.5 is transcribed from BSP
+**2.0.0**. If that sequence is ever re-derived from upstream, confirm the
+version first.
+
+---
+
+## 3. Architecture
+
+```
++-------------------------------------------------------------+
+|  application  (pure C99, portable, host-testable)           |
+|    render_c99.c : rasterizers, LUTs, palette                |
++-------------------------------------------------------------+
+|  graphics messaging layer  (NeoGPU port, §7)                |
+|    opcode stream -> channels -> frame begin/end/present     |
+|    HSBackendOps vtable                                       |
++-------------------------------------------------------------+
+|  hs_backend_sh8601.c   <-- Milestone 2 delivers this        |
++-------------------------------------------------------------+
+|  metal99 platform  (§6)                                      |
+|    start.c  wdt.c  io.c  spi2.c  gdma.c                     |
++-------------------------------------------------------------+
+|  ESP32-S3 silicon                                            |
++-------------------------------------------------------------+
+```
+
+Layers above `hs_backend_sh8601.c` contain **no register access**. Layers below
+contain **no rendering logic**. That boundary is what keeps `render_c99.c`
+compiling and running unchanged on a Linux host.
+
+### 3.1 Boot model
+
+The firmware image is written to **flash offset 0x0** — the bootloader slot.
+The mask ROM loads our segments straight into SRAM and jumps to `_start`. There
+is no second-stage bootloader and no partition table.
+
+Consequences:
+- The entire firmware must fit in internal SRAM.
+- The ROM jumps in **with a valid stack**, so `_start` can be plain C. No
+  assembly prologue is needed.
+- `.bss` is **not** zeroed for us. `_start` does it.
+- Hardware watchdogs arrive **armed**. See §6.1.
+
+Memory layout (`link.ld`):
+
+| Region | Origin | Length |
+|---|---|---|
+| `iram` (code) | `0x40378000` | `0x20000` (128 K) |
+| `dram` (data) | `0x3FCA8000` | `0x30000` (192 K) |
+
+SRAM1 is dual-mapped: IRAM `0x40378000` == DRAM `0x3FC88000`, offset `0x6F0000`.
+Both regions stay below `0x3FCE9700`, which the ROM uses for its own stack.
+
+---
+
+## 4. Performance budget
+
+Measured on this hardware with the ESP-IDF-based `bare_metal_fb` build
+(`-O2`, 368x448 RGB565, band flush, no FreeRTOS). These numbers set the targets
+metal99 must meet or beat.
+
+| Renderer | Render | Flush | Total | FPS |
+|---|---|---|---|---|
+| Solid fill | 6.18 ms | 22.49 ms | 28.67 ms | 34.8 |
+| Integer LUT plasma | 11.57 ms | 22.49 ms | 34.07 ms | 29.3 |
+| Per-pixel `sqrtf` x2 | 135.57 ms | 22.49 ms | 158.06 ms | 6.3 |
+
+Band-height sweep (solid fill):
+
+| Band rows | Flush | FPS |
+|---|---|---|
+| 8 | 27.38 ms | 29.7 |
+| 16 | 24.13 ms | 32.9 |
+| 32 | 22.49 ms | 34.8 |
+| **64** | **21.81 ms** | **35.7** |
+
+### 4.1 What the numbers mean
+
+- **Flush dominates.** ~21.8 ms of DMA per full frame = 15.1 MB/s effective.
+  Hard ceiling ~**45 fps** at band 64, before any rendering.
+- **Render budget is ~7 ms** to hold 30 fps.
+- **Float in the inner loop is fatal.** Two `sqrtf` per pixel costs 11x. Use
+  LUTs and fixed point.
+- **Larger bands are better** and the curve had not flattened at 64. metal99
+  should sweep past 64 — the ESP-IDF build was capped by its staging buffer, not
+  by the hardware.
+
+### 4.2 Known-bad path
+
+The ESP-IDF SPI master **cannot DMA out of PSRAM**; it silently bounces through
+an internal-RAM buffer and a full 329 KB frame fails to allocate. metal99 sidesteps
+this entirely by never putting pixels in PSRAM.
+
+---
+
+## 5. Memory budget
+
+Total internal SRAM: **512 KB**. Our linker regions claim 320 KB of it.
+
+| Consumer | Size | Notes |
+|---|---|---|
+| Code (`.text`) | ~8–16 K est. | Milestone 1 was 879 B |
+| Band staging buffer | 46 K | 64 rows x 368 x 2 B |
+| Messaging layer (embedded profile, §7.4) | 34 K | vs 1920 K at desktop defaults |
+| Stack | 8 K | |
+| **Subtotal** | **~104 K** | Comfortable inside 320 K |
+
+Headroom allows a larger band (128 rows = 92 K) or a full 368x448 framebuffer
+in SRAM (322 K) if a persistent surface is ever needed — though that would
+crowd out everything else and is not planned.
+
+---
+
+## 6. Milestone 2 — SH8601 bring-up from registers
+
+**Goal:** color bars on the panel, driven entirely by our own register writes.
+
+**Success criterion:** five horizontal bands — red, green, blue, white, black —
+top to bottom. Chosen deliberately over a solid fill because one image
+simultaneously verifies (a) byte order, (b) geometry / address-window commands,
+and (c) that the panel is out of sleep.
+
+### 6.1 Watchdogs (done in Milestone 1)
+
+The ROM hands over with watchdogs armed; without this the board reset-loops with
+`rst:0x7 (TG0WDT_SYS_RST)`.
+
+| Watchdog | Config reg | Protect reg | Key |
+|---|---|---|---|
+| TIMG0 MWDT | `0x6001F048` | `0x6001F064` | `0x50D83AA1` |
+| TIMG1 MWDT | `0x60020048` | `0x60020064` | `0x50D83AA1` |
+| RTC WDT | `0x60008098` | `0x600080B0` | `0x50D83AA1` |
+| RTC super-WDT | `0x600080B4` | `0x600080B8` | `0x8F1D312A` |
+
+The super-watchdog **cannot be disabled** — set `SWD_AUTO_FEED_EN` (bit 31).
+
+### 6.2 Peripheral clock and reset
+
+SPI2 boots clock-gated. Order matters: enable clock, pulse reset, then configure.
+
+| Register | Address | Bit |
+|---|---|---|
+| `SYSTEM_PERIP_CLK_EN0` | `0x600C0018` | `SPI2_CLK_EN` = bit 6 |
+| `SYSTEM_PERIP_RST_EN0` | `0x600C0020` | `SPI2_RST` = bit 6 |
+
+Sequence: set `CLK_EN`; set then clear `RST`.
+
+### 6.3 Pin routing via GPIO matrix
+
+Because the board's pinout conflicts with IO_MUX defaults (§2.2), every signal
+routes through the GPIO matrix.
+
+Per pin:
+1. Set the pin's IO_MUX register (`0x60009000` + pin offset) to function
+   `GPIO` (so the matrix owns it), drive strength, and no pull.
+2. Enable output: `GPIO_ENABLE_W1TS` (`0x60004024`).
+3. Point the matrix at the peripheral signal:
+   `GPIO_FUNC{n}_OUT_SEL_CFG` = `0x60004554 + 4*n`, write the signal index.
+
+Signal indices (from `gpio_sig_map.h`):
+
+| Signal | Index | GPIO |
+|---|---|---|
+| `FSPICLK_OUT` | 101 | 11 |
+| `FSPIQ_OUT` (D1) | 102 | 5 |
+| `FSPID_OUT` (D0) | 103 | 4 |
+| `FSPIHD_OUT` (D3) | 104 | 7 |
+| `FSPIWP_OUT` (D2) | 105 | 6 |
+| `FSPICS0_OUT` | 110 | 12 |
+
+> **Unverified:** the D0–D3 to FSPID/Q/WP/HD mapping above follows the standard
+> quad-SPI ordering (D0=D/MOSI, D1=Q/MISO, D2=WP, D3=HD). Confirm against TRM
+> before first bring-up; a swap here produces scrambled pixels, not a blank
+> screen, which makes it easy to diagnose from the color bars.
+
+### 6.4 SPI2 configuration
+
+Base `0x60024000`.
+
+| Register | Offset | Purpose |
+|---|---|---|
+| `SPI_CMD` | `0x00` | `USR` bit starts a transaction; poll it for done |
+| `SPI_CTRL` | `0x08` | quad/dual mode for data phase |
+| `SPI_CLOCK` | `0x0C` | clock divider |
+| `SPI_USER` | `0x10` | which phases are present (cmd/addr/dummy/MOSI) |
+| `SPI_USER1` | `0x14` | addr and dummy bit-lengths |
+| `SPI_USER2` | `0x18` | command value and command bit-length |
+| `SPI_MS_DLEN` | `0x1C` | transaction data length in bits |
+| `SPI_MISC` | `0x20` | CS setup/hold |
+| `SPI_DMA_CONF` | `0x30` | DMA enable (Milestone 3) |
+| `SPI_W0..W15` | `0x98..` | 64-byte CPU FIFO |
+
+Required settings: SPI mode 0, MSB first, 40 MHz, CS asserted for the whole
+transaction, command phase 32 bits on **one** line, data phase on **four** lines
+for pixels and **one** line for parameters.
+
+> **Unverified:** exact bit positions within `SPI_USER`, `SPI_USER1`, `SPI_USER2`,
+> `SPI_CTRL`, and the `SPI_CLOCK` divider encoding are not yet transcribed from
+> the TRM. They must be read from the ESP32-S3 TRM SPI chapter before coding.
+> This is the largest remaining unknown in Milestone 2.
+
+### 6.5 SH8601 QSPI framing
+
+Command word is 32 bits, sent on a single line:
+
+```
+[ opcode , 0x00 , cmd , 0x00 ]        (big-endian byte order)
+   opcode = 0x02   parameter write, data phase on 1 line
+   opcode = 0x32   pixel  write, data phase on 4 lines (cmd = 0x2C)
+```
+
+Equivalently: `word = (opcode << 24) | (cmd << 8)`.
+
+### 6.6 Init sequence
+
+Transcribed from BSP 2.0.0. Format: `{ cmd, params, param_count, delay_ms }`.
+
+| # | Cmd | Params | Delay | Meaning |
+|---|---|---|---|---|
+| 1 | `0x11` | — | **120 ms** | Sleep out |
+| 2 | `0x44` | `01 D1` | 0 | Tear scanline |
+| 3 | `0x35` | `00` | 0 | Tearing effect on |
+| 4 | `0x53` | `20` | 10 ms | Write CTRL display |
+| 5 | `0x2A` | `00 00 01 6F` | 0 | Column addr 0..367 |
+| 6 | `0x2B` | `00 00 01 BF` | 0 | Row addr 0..447 |
+| 7 | `0x51` | `00` | 10 ms | Brightness = 0 |
+| 8 | `0x29` | — | 10 ms | Display on |
+| 9 | `0x51` | `FF` | 0 | Brightness = full |
+
+Note `0x2A` ends at `0x16F` = 367 and `0x2B` at `0x1BF` = 447 — confirming
+368x448 with zero offset. There is **no reset pin**, so software reset via
+`0x11` is the only reset path. The 120 ms delay after it is mandatory.
+
+Brightness is set to 0 before display-on and raised afterwards, which suppresses
+a flash of garbage framebuffer at power-up. Preserve that ordering.
+
+### 6.7 Transfer path: CPU FIFO first
+
+Milestone 2 uses the **64-byte CPU FIFO** (`SPI_W0..W15`), not DMA.
+
+Rationale: if SPI2 configuration and GDMA descriptors are written together and
+the screen stays black, the fault could be in either and they fail identically.
+The FIFO path is slow — 368x448x2 = 329,728 B in 64-byte chunks is ~5,152
+transactions, likely seconds per frame — but if bars appear, **the protocol is
+proven** and DMA becomes purely a speed problem with a known-good reference.
+
+Loop: write up to 64 B into `SPI_W0..W15`; set `SPI_MS_DLEN` to the bit count;
+set `SPI_CMD.USR`; poll `SPI_CMD.USR` until clear; repeat.
+
+### 6.8 Deliverables
+
+| File | Contents |
+|---|---|
+| `src/spi2.c` / `.h` | clock/reset, pin routing, SPI2 config, FIFO transfer |
+| `src/sh8601.c` / `.h` | init sequence, address window, pixel write |
+| `src/main.c` | color-bar test |
+
+---
+
+## 7. Graphics messaging layer
+
+Port of the NeoGPU graphics core (`github.com/anjaustin/neogpu`), ML and GLES
+excluded.
+
+### 7.1 Scope
+
+The graphics-only subset is **4,856 lines**, not the repo's 47K:
+
+| File | Lines | Disposition |
+|---|---|---|
+| `hs_core.c` | 1455 | Port |
+| `hs_nodes.c` | 847 | Port |
+| `hs_gpu.c` | 382 | Port |
+| `hs_async.c` | 281 | **Drop** (POSIX threads) |
+| `hs_math_neon.h` | 514 | **Replace** (scalar C99) |
+| `hs_msg.h`, `hs_core.h`, `hs_buffer.h`, `hs_nodes.h`, `hs_gpu.h`, `hs_render.h`, `hs_backend.h` | ~1377 | Port |
+
+No ML or GLES symbols appear in any core `.c` file — the subsystems are cleanly
+separable.
+
+### 7.2 NEON is a non-issue
+
+`hs_core.h` includes `<arm_neon.h>`, but the message layer **uses no vector
+types**. The include is vestigial. Deleting one line removes NEON from the
+messaging layer entirely. `hs_math_neon.h` is only needed by the 3D math path,
+which the display backend does not use.
+
+### 7.3 Concurrency is the real work
+
+`hs_core.h` pulls in `<pthread.h>` and `<stdatomic.h>`, and the submit queue is
+built for 8 concurrent producers:
+
+```c
+typedef struct {
+    atomic_uint seq;
+    Message msg;
+    u32 payload_len;
+    u8  payload[HS_PAYLOAD_SIZE];
+} __attribute__((aligned(64))) HSSubmitSlot;
+```
+
+**`<stdatomic.h>` is C11 and directly violates constraint 1.** Unlike the NEON
+include it is load-bearing.
+
+Replacement model — single core, no preemption, no interrupts (§1.1):
+
+| POSIX construct | C99 bare-metal replacement |
+|---|---|
+| `atomic_uint` | plain `volatile unsigned` |
+| `pthread_mutex_lock/unlock` | interrupt-disable critical section (`rsil`) |
+| `pthread_cond_*` | delete — nothing blocks |
+| lock-free MPSC ring | single-producer ring; no CAS needed |
+
+Because Milestone 2 polls rather than using interrupts, the critical sections
+can initially be **empty macros**. They become real `rsil`/`wsr ps` pairs only
+if an ISR is ever introduced. That keeps the port honest without paying for
+synchronisation nothing needs yet.
+
+> This is a rewrite of the concurrency model, not a search-and-replace. It is
+> the single largest piece of work in §7 and should be scoped as such.
+
+### 7.4 Embedded capacity profile
+
+Defaults are desktop-sized. Measured struct sizes: `Message` 20 B,
+`Payload` 128 B, `HSSubmitSlot` 128 B.
+
+| Constant | Desktop | Embedded | Cost at embedded |
+|---|---|---|---|
+| `HS_MAX_MSG_LOG` | 65536 | **512** | 10.0 K |
+| `HS_MAX_PAYLOADS` | 4096 | **128** | 16.0 K |
+| `HS_SUBMIT_SIZE` | 1024 | **64** | 8.0 K |
+| **Total** | **1920 K** | | **34 K** |
+
+1920 K is 3.75x the entire SRAM; 34 K fits comfortably (§5). These are
+compile-time constants and scale linearly, so this is configuration, not
+redesign. The capture/replay feature is the first thing constrained by the
+smaller log.
+
+### 7.5 Backend interface
+
+```c
+typedef struct {
+    bool (*init)(void* ctx, HSGpu* gpu);
+    void (*shutdown)(void* ctx, HSGpu* gpu);
+    void (*begin_frame)(void* ctx, const HSFrameContext* frame);
+    void (*execute)(void* ctx, const HSFrameContext* frame);
+    void (*end_frame)(void* ctx, const HSFrameContext* frame);
+} HSBackendOps;
+```
+
+`hs_backend_sh8601.c` implements this vtable:
+
+| Op | Behaviour |
+|---|---|
+| `init` | SPI2 bring-up + SH8601 init (§6), allocate band buffer |
+| `begin_frame` | reset band cursor / dirty tracking |
+| `execute` | consume the render command list, rasterize into bands |
+| `end_frame` | flush remaining bands, set address window, push pixels |
+| `shutdown` | display off |
+
+Note `bool` requires `<stdbool.h>`, which is C99 — fine.
+
+### 7.6 Other host assumptions to replace
+
+| Used by core | Replacement |
+|---|---|
+| `fprintf` | `con_puts` / `con_dec` (`io.c`) |
+| `clock_gettime` | `rsr ccount` cycle counter |
+| `read` / `write` | delete (IPC path, not needed) |
+| `memcpy` / `memset` | own implementations — no libc |
+
+---
+
+## 8. Verification plan
+
+Each milestone has a criterion that fails loudly rather than silently.
+
+| # | Deliverable | Success criterion | Status |
+|---|---|---|---|
+| 1 | Boot, console, watchdogs | Stable heartbeat over USB-Serial-JTAG, no reset loop | **DONE** — 960 B image |
+| 2 | SH8601 from registers | Color bars R/G/B/white/black visible on panel | specified |
+| 3 | GDMA transfer | Same bars, full frame under 25 ms | specified |
+| 4 | Renderer integration | `render_c99.c` plasma at >= 25 fps | specified |
+| 5 | Messaging layer | Opcode stream drives the panel; `OP_PRESENT` produces a visible frame | specified |
+
+**Visual verification is mandatory.** A silent black screen is the expected
+failure mode for every register-level bug in Milestone 2 — wrong pin, wrong bit,
+wrong init byte all look identical from the console. Console output alone does
+not constitute success.
+
+---
+
+## 9. Risks
+
+| Risk | Severity | Mitigation |
+|---|---|---|
+| SPI2 register bit layouts not yet transcribed (§6.4) | **High** | Read TRM SPI chapter before coding. Largest unknown. |
+| D0–D3 to FSPID/Q/WP/HD mapping wrong (§6.3) | Medium | Produces scrambled — not blank — output; diagnosable from bars |
+| QSPI failures are silent | Medium | FIFO before DMA; bars before animation |
+| Concurrency rewrite (§7.3) larger than estimated | Medium | Empty critical sections initially; no ISR exists yet |
+| ROM stack too small for our call depth | Low | Switch to own stack via `_stack_top` if it bites |
+| Image outgrows 128 K IRAM | Low | 879 B used of 128 K |
+
+---
+
+## 10. Open questions
+
+1. **Is NeoGPU the target, or a source of ideas?** Milestone 2 is unchanged
+   either way — the register work is identical whether it produces a standalone
+   demo or an `HSBackendOps` implementation. The decision can be deferred until
+   after the panel lights up.
+2. **Does the message log matter on-device?** It is the largest single consumer
+   at desktop defaults and the feature most constrained by the embedded profile.
+3. **Second core.** Currently unused. Rendering on core 1 while core 0 flushes
+   is the obvious path to the ~45 fps ceiling, but requires starting the APP CPU
+   by hand.
+
+---
+
+## Appendix A — Register reference
+
+Confirmed against ESP-IDF v5.5.5 `soc/esp32s3` headers.
+
+| Peripheral | Base |
+|---|---|
+| UART0 | `0x60000000` |
+| GPIO | `0x60004000` |
+| RTC_CNTL | `0x60008000` |
+| IO_MUX | `0x60009000` |
+| TIMG0 | `0x6001F000` |
+| TIMG1 | `0x60020000` |
+| SPI2 | `0x60024000` |
+| USB-Serial-JTAG | `0x60038000` |
+| GDMA | `0x6003F000` |
+| SYSTEM | `0x600C0000` |
+
+| Register | Address |
+|---|---|
+| `GPIO_OUT_W1TS` | `0x60004008` |
+| `GPIO_ENABLE_W1TS` | `0x60004024` |
+| `GPIO_FUNC0_OUT_SEL_CFG` | `0x60004554` (+4 per GPIO) |
+| `SYSTEM_PERIP_CLK_EN0` | `0x600C0018` |
+| `SYSTEM_PERIP_RST_EN0` | `0x600C0020` |
+| `USJ_EP1` (console FIFO) | `0x60038000` |
+| `USJ_EP1_CONF` | `0x60038004` |
+
+---
+
+## Appendix B — Build and flash
+
+```sh
+./metal99/build.sh                                    # gcc + ld + elf2image
+esptool --port /dev/ttyACM1 write-flash 0x0 metal99/build/fw.bin
+```
+
+No ESP-IDF environment required. To restore the stock firmware:
+
+```sh
+cd backup && sha256sum -c stock-full-16MB-20260823.bin.sha256
+esptool --port /dev/ttyACM1 write-flash 0x0 stock-full-16MB-20260823.bin
+```

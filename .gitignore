@@ -17,3 +17,6 @@ waveshare-demo/
 *.swp
 *~
 .DS_Store
+
+# scratch clones for reference
+tmp/
