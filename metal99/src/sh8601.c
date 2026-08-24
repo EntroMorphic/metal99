@@ -97,36 +97,41 @@ static sh8601_stats g_stats;
 
 const sh8601_stats *sh8601_last_frame(void) { return &g_stats; }
 
-int sh8601_write_frame(void (*rowfn)(uint16_t *row, int y))
+
+
+
+int sh8601_write_span(uint16_t y0, uint16_t y1, void (*rowfn)(uint16_t *row, int y))
 {
     static uint16_t VEC_ALIGN row[SH8601_WIDTH];
+    uint8_t VEC_ALIGN word[16];
     uint32_t t_frame = cpu_cycles();
     uint32_t t_mark;
-    uint8_t VEC_ALIGN word[16];
     int rc, y;
 
-    if (rowfn == NULL) return SPI2_E_NULL;
+    if (rowfn == NULL)               return SPI2_E_NULL;
+    if (y1 < y0 || y1 >= SH8601_HEIGHT) return SPI2_E_LEN;
 
-    rc = sh8601_set_window(0u, 0u, SH8601_WIDTH - 1u, SH8601_HEIGHT - 1u);
+    rc = sh8601_set_window(0u, y0, SH8601_WIDTH - 1u, y1);
     if (rc != SPI2_OK) return rc;
 
-    /* 0x32 opcode selects the four-line data phase; 0x2C is memory-write. */
+    /* 0x32 selects the four-line data phase; 0x2C is memory-write. CS is held
+     * from here through the last pixel of the span. */
     word[0] = OPCODE_PIXEL; word[1] = 0x00u; word[2] = 0x2Cu; word[3] = 0x00u;
-    rc = spi2_xfer(word, 4u, 0 /* command is one-line */, 1 /* hold CS */);
+    rc = spi2_xfer(word, 4u, 0, 1);
     if (rc != SPI2_OK) return rc;
 
     g_stats.render_cycles = 0u;
     g_stats.flush_cycles  = 0u;
     g_stats.bytes         = 0u;
 
-    for (y = 0; y < SH8601_HEIGHT; y++) {
+    for (y = (int)y0; y <= (int)y1; y++) {
         t_mark = cpu_cycles();
         rowfn(row, y);
         g_stats.render_cycles += cpu_cycles() - t_mark;
 
         t_mark = cpu_cycles();
         rc = stream((const uint8_t *)row, (uint32_t)SH8601_WIDTH * 2u,
-                    (y == SH8601_HEIGHT - 1));
+                    (y == (int)y1));
         g_stats.flush_cycles += cpu_cycles() - t_mark;
         if (rc != SPI2_OK) return rc;
         g_stats.bytes += (uint32_t)SH8601_WIDTH * 2u;
@@ -134,6 +139,13 @@ int sh8601_write_frame(void (*rowfn)(uint16_t *row, int y))
     g_stats.total_cycles = cpu_cycles() - t_frame;
     return SPI2_OK;
 }
+
+int sh8601_write_frame(void (*rowfn)(uint16_t *row, int y))
+{
+    return sh8601_write_span(0u, (uint16_t)(SH8601_HEIGHT - 1), rowfn);
+}
+
+uint32_t sh8601_dbg_desc(void) { return g_desc.dw0; }
 
 int sh8601_sleep(void)
 {
@@ -218,5 +230,3 @@ int sh8601_scroll_start(uint16_t row)
     p[1] = (uint8_t)(row & 0xFFu);
     return sh8601_cmd(0x37u, p, 2u);
 }
-
-uint32_t sh8601_dbg_desc(void) { return g_desc.dw0; }

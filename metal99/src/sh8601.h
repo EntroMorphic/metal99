@@ -38,6 +38,17 @@ uint16_t sh8601_rgb565(uint8_t r, uint8_t g, uint8_t b);
 int sh8601_write_frame(void (*rowfn)(uint16_t *row, int y));
 
 /*
+ * Write ONE horizontal span, rows y0..y1 inclusive, full width.
+ *
+ * This is the elision primitive. The panel keeps its own framebuffer, so rows
+ * outside the span keep whatever they held - untouched pixels cost nothing.
+ * Full width because our renderer produces whole rows and the address window
+ * is a rectangle; sub-width tiles would need row extraction and are a later
+ * refinement.
+ */
+int sh8601_write_span(uint16_t y0, uint16_t y1, void (*rowfn)(uint16_t *row, int y));
+
+/*
  * Full power-up sequence. There is NO reset pin on this board, so 0x11
  * (sleep out) is the only reset path and its 120 ms settle is a MINIMUM.
  */
