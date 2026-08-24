@@ -212,8 +212,16 @@ transport. The physical bound for metal99 is arithmetic:
 Today's 3.2 fps is **94.7% per-transaction overhead**, not physics - the FIFO
 path was chosen to isolate protocol bugs from DMA bugs and it did that job.
 
-Note `SOC_SPI_SUPPORT_DDRCLK = 1`: this silicon does double-data-rate SPI.
-Whether the SH8601 accepts it is unknown and cheap to test.
+~~Note `SOC_SPI_SUPPORT_DDRCLK = 1`~~ - **REFUTED, see
+`docs/lmm/framerate_phase0_results.md`.** That flag appears only in Kconfig
+capability files; there is no DDR implementation in the SPI master HAL, and the
+DDR-adjacent registers belong to a DQS strobe scheme needing a strobe line this
+panel lacks. **No DDR on this path.** Likewise panel-side vertical scroll
+(`0x33`/`0x37`) is **not implemented** by this panel - tested, bars did not
+move. And 80 MHz requires the PLL, so the clock ceiling test is gated on
+Phase 2 rather than preceding it.
+
+**Realistic ceiling: 60.6 fps full-frame at 40 MHz SDR.**
 
 **Full-frame fps is also the wrong metric.** See `docs/lmm/framerate_synth.md`.
 A 32x32 region update costs ~102 us at 40 MHz, i.e. ~10,000 updates/sec, using
