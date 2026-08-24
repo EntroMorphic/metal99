@@ -1,5 +1,6 @@
 #include "sh8601.h"
 #include "spi2.h"
+#include "io.h"
 #include <stddef.h>
 
 #define OPCODE_PARAM 0x02u
@@ -94,5 +95,72 @@ int sh8601_write_frame(void (*rowfn)(uint16_t *row, int y))
                     (y == SH8601_HEIGHT - 1));
         if (rc != SPI2_OK) return rc;
     }
+    return SPI2_OK;
+}
+
+int sh8601_sleep(void)
+{
+    int rc = sh8601_cmd(0x28u, NULL, 0u);      /* display off */
+    if (rc != SPI2_OK) return rc;
+    delay_ms(20u);
+    rc = sh8601_cmd(0x10u, NULL, 0u);          /* sleep in */
+    if (rc != SPI2_OK) return rc;
+    delay_ms(120u);                            /* datasheet settle */
+    return SPI2_OK;
+}
+
+int sh8601_init(void)
+{
+    /*
+     * The BSP's nine commands are only the VENDOR portion. The esp_lcd_sh8601
+     * driver sends more around them, and leaving those out is why our first
+     * cold-start attempt stayed black:
+     *
+     *   panel_reset() : 0x01 software reset + 80 ms (this board has no reset
+     *                   pin, so software reset is the only path)
+     *   panel_init()  : 0x36 MADCTL then 0x3A COLMOD, BEFORE the vendor list
+     *
+     * COLMOD is the pixel-format register. Without it the panel has no idea
+     * the stream is RGB565, so pixels land as noise or nothing at all.
+     */
+    static const uint8_t p36[1] = { 0x00u };   /* MADCTL: RGB element order  */
+    static const uint8_t p3A[1] = { 0x55u };   /* COLMOD: 16bpp RGB565       */
+
+    /* Transcribed from Waveshare BSP 2.0.0 (the SH8601 revision - BSP >= 2.0.3
+     * is the CO5300 board and its sequence would be wrong here). */
+    static const uint8_t p44[2] = { 0x01u, 0xD1u };   /* tear scanline      */
+    static const uint8_t p35[1] = { 0x00u };          /* tearing effect on  */
+    static const uint8_t p53[1] = { 0x20u };          /* WRCTRLD, BCTRL on  */
+    static const uint8_t p51_0[1] = { 0x00u };
+    static const uint8_t p51_f[1] = { 0xFFu };
+    int rc;
+
+    /* Software reset first - no reset pin on this board. */
+    rc = sh8601_cmd(0x01u, NULL, 0u);   if (rc != SPI2_OK) return rc;
+    delay_ms(80u);
+
+    /* Format registers must precede the vendor sequence. */
+    rc = sh8601_cmd(0x36u, p36, 1u);    if (rc != SPI2_OK) return rc;
+    rc = sh8601_cmd(0x3Au, p3A, 1u);    if (rc != SPI2_OK) return rc;
+
+    rc = sh8601_cmd(0x11u, NULL, 0u);   if (rc != SPI2_OK) return rc;
+    delay_ms(120u);                     /* MINIMUM after sleep out */
+
+    rc = sh8601_cmd(0x44u, p44, 2u);    if (rc != SPI2_OK) return rc;
+    rc = sh8601_cmd(0x35u, p35, 1u);    if (rc != SPI2_OK) return rc;
+    rc = sh8601_cmd(0x53u, p53, 1u);    if (rc != SPI2_OK) return rc;
+    delay_ms(10u);
+
+    rc = sh8601_set_window(0u, 0u, SH8601_WIDTH - 1u, SH8601_HEIGHT - 1u);
+    if (rc != SPI2_OK) return rc;
+
+    /* Brightness 0 BEFORE display-on, full AFTER: suppresses a flash of
+     * whatever garbage is sitting in panel RAM at power-up. Keep this order. */
+    rc = sh8601_cmd(0x51u, p51_0, 1u);  if (rc != SPI2_OK) return rc;
+    delay_ms(10u);
+    rc = sh8601_cmd(0x29u, NULL, 0u);   if (rc != SPI2_OK) return rc;
+    delay_ms(10u);
+    rc = sh8601_cmd(0x51u, p51_f, 1u);  if (rc != SPI2_OK) return rc;
+
     return SPI2_OK;
 }

@@ -3,14 +3,11 @@
 #include "spi2.h"
 #include "sh8601.h"
 
-/* Five bands: red, green, blue, white, black. Chosen over a solid fill because
- * one image verifies byte order, geometry and the address window at once. */
 static void colorbars(uint16_t *row, int y)
 {
     static uint16_t bars[5];
     static int init = 0;
     int band, x;
-
     if (!init) {
         bars[0] = sh8601_rgb565(255, 0, 0);
         bars[1] = sh8601_rgb565(0, 255, 0);
@@ -23,38 +20,51 @@ static void colorbars(uint16_t *row, int y)
     for (x = 0; x < SH8601_WIDTH; x++) row[x] = bars[band];
 }
 
-/* Vertical ramp, so a second frame proves we can redraw, not just draw once. */
-static void gradient(uint16_t *row, int y)
+/*
+ * COLD-START PROOF.
+ *
+ * Everything so far has ridden on the previous firmware's initialisation. To
+ * show sh8601_init() genuinely brings the panel up, first force it DOWN
+ * (display off + sleep in), then bring it back with our own sequence only.
+ *
+ * Observable cycle:  bars -> dark -> bars
+ * The second "bars" is only possible if our init worked.
+ */
+/* Solid magenta - unmistakably different from the bars. */
+static void magenta(uint16_t *row, int y)
 {
     int x;
-    uint8_t v = (uint8_t)((y * 255) / (SH8601_HEIGHT - 1));
-    for (x = 0; x < SH8601_WIDTH; x++) {
-        uint8_t u = (uint8_t)((x * 255) / (SH8601_WIDTH - 1));
-        row[x] = sh8601_rgb565(v, u, (uint8_t)(255u - v));
-    }
+    (void)y;
+    for (x = 0; x < SH8601_WIDTH; x++) row[x] = sh8601_rgb565(255, 0, 255);
 }
 
+/*
+ * ISOLATION TEST: no sleep at all.
+ *
+ * The panel retains its framebuffer across CPU resets, so a stale image looks
+ * exactly like a working one. Alternating two very different frames makes any
+ * static screen a definite failure.
+ *
+ *   animates      -> init + draw are fine; the sleep/wake cycle was the problem
+ *   static bars   -> our init broke drawing (ghost from an earlier flash)
+ */
 void app_entry(void)
 {
-    uint32_t t0, ms;
     int rc, i;
 
-    con_puts("\r\n=== metal99 : SH8601 pixel path ===\r\n");
+    con_puts("\r\n=== metal99 : init + redraw, NO sleep ===\r\n");
+    con_puts("expect BARS <-> MAGENTA every 3s. static = failure.\r\n");
+
     spi2_init();
-    (void)sh8601_brightness(0xFFu);
+
+    rc = sh8601_init();
+    con_puts("sh8601_init rc="); con_dec((int32_t)rc); con_puts("\r\n");
 
     for (i = 0; ; i++) {
-        void (*fn)(uint16_t *, int) = ((i & 1) == 0) ? colorbars : gradient;
-
-        t0 = cpu_cycles();
+        void (*fn)(uint16_t *, int) = ((i & 1) == 0) ? colorbars : magenta;
         rc = sh8601_write_frame(fn);
-        ms = (cpu_cycles() - t0) / (CPU_HZ / 1000u);
-
-        con_puts(((i & 1) == 0) ? "  colorbars " : "  gradient  ");
-        con_puts("rc="); con_dec((int32_t)rc);
-        con_puts("  frame="); con_dec((int32_t)ms); con_puts(" ms");
-        con_puts(rc == SPI2_OK ? "  sent\r\n" : "  FAILED\r\n");
-
+        con_puts(((i & 1) == 0) ? "  BARS    rc=" : "  MAGENTA rc=");
+        con_dec((int32_t)rc); con_puts("\r\n");
         delay_ms(3000u);
     }
 }

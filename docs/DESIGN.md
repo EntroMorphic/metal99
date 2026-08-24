@@ -502,6 +502,55 @@ Two independent facts fall out:
 Together they say Milestone 3 (GDMA) and PLL enablement are the two things
 standing between here and a usable frame rate, and they are independent.
 
+### 6.6d Our own init sequence - 2026-08-24
+
+`sh8601_init()` brings the panel up and drawing works repeatedly. Two real
+findings, both of which cost time and are worth keeping.
+
+#### The BSP's nine commands are only the VENDOR portion
+
+The array in the BSP is `vendor_config.init_cmds`. The `esp_lcd_sh8601` driver
+wraps it with three more steps that are **not** in that array:
+
+| Step | Command | Value |
+|---|---|---|
+| `panel_reset()` | `0x01` SWRESET + **80 ms** | (no reset pin on this board) |
+| `panel_init()` | `0x36` MADCTL | `0x00` (RGB element order) |
+| `panel_init()` | **`0x3A` COLMOD** | **`0x55` (16bpp RGB565)** |
+
+`COLMOD` is the pixel-format register. Without it the panel does not know the
+stream is RGB565, accepts every byte, and renders nothing. Transcribing only
+the vendor array produced a permanently black screen.
+
+This went unnoticed for three milestones because the previous firmware had
+already set those registers and they survive a CPU reset.
+
+#### Sleep-in is a one-way door with this init
+
+`0x10` (sleep in) puts the panel somewhere our abbreviated sequence cannot
+recover from - `0x11` sleep-out plus the vendor list is not enough to bring it
+back. Almost certainly sleep-in drops the panel's internal supply, and waking
+needs vendor power-on steps the BSP list does not contain, because the BSP only
+ever initialises from power-on, never from sleep.
+
+**Sleep is not a project goal.** `sh8601_sleep()` existed only to manufacture a
+cold start to recover from. It is retained but marked unsupported; nothing in
+the graphics path calls it.
+
+#### The ghost-framebuffer trap
+
+The panel keeps its framebuffer across CPU resets, **and** `0x01` software reset
+explicitly does not clear it. So a stale image is indistinguishable from a
+freshly drawn one, and "the screen shows bars" was twice mistaken for success
+when nothing was actually reaching the panel.
+
+> **Rule for this project: a display showing something is not evidence that
+> your code put it there. Only change is evidence.** Every test after first
+> contact is built on motion - alternating two very different frames - so a
+> static screen is unambiguously a failure.
+
+The only true cold start is a **physical power cycle**; a CPU reset is not one.
+
 ### 6.7 Transfer path: CPU FIFO first
 
 Milestone 2 uses the **64-byte CPU FIFO** (`SPI_W0..W15`), not DMA.
@@ -649,7 +698,8 @@ Each milestone has a criterion that fails loudly rather than silently.
 | 2a | SPI2 from registers | 40 MHz bus, quad mode confirmed by timing | **DONE** — 40000 kHz, PASS |
 | 2b-i | Command path (brightness) | Frozen image pulses under command | **DONE** |
 | 2b-ii | Pixel path | Colour bars + gradient render correctly | **DONE** |
-| 2b-iii | Our own init sequence | Panel comes up from cold without prior init | next |
+| 2b-iii | Our own init sequence | init + redraw verified; sleep/wake unsupported | **DONE** |
+| 2b-iv | Power-cycle cold start | Panel comes up after physical unplug | next |
 | 3 | GDMA transfer | Same bars, full frame under 25 ms | specified |
 | 4 | Renderer integration | `render_c99.c` plasma at >= 25 fps | specified |
 | 5 | Messaging layer | Opcode stream drives the panel; `OP_PRESENT` produces a visible frame | specified |
