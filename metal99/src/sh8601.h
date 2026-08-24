@@ -47,4 +47,13 @@ int sh8601_init(void);
  * actually brings the panel up rather than inheriting a working state. */
 int sh8601_sleep(void);
 
+/*
+ * MIPI DCS vertical scroll. If the panel implements these, scrolling costs ONE
+ * command instead of a repaint - an asymptote change, not a multiplier.
+ *   0x33 VSCRDEF  : top-fixed, scroll-area, bottom-fixed (rows)
+ *   0x37 VSCRSAR  : scroll start row
+ */
+int sh8601_scroll_def(uint16_t tfa, uint16_t vsa, uint16_t bfa);
+int sh8601_scroll_start(uint16_t row);
+
 #endif /* SH8601_PANEL_H */

@@ -19,6 +19,7 @@
 #define SPI2_E_LEN   (-1)    /* len 0, or > SPI2_FIFO_BYTES */
 #define SPI2_E_NULL  (-2)
 #define SPI2_E_ALIGN (-3)    /* data not 16-byte aligned (see contract below) */
+#define SPI2_E_HANG  (-4)    /* peripheral did not complete - clock stopped? */
 
 /* Clock-gate, reset, route pins through the GPIO matrix, configure mode 0. */
 void spi2_init(void);
@@ -50,5 +51,8 @@ int spi2_xfer(const uint8_t *data, uint32_t len, int quad, int keep_cs);
  * pixels and get a partially-blank panel.
  */
 int spi2_write(const uint8_t *data, uint32_t len, int quad);
+
+/* Red-team hooks: re-measure the APB clock source with a CORRECT method. */
+int spi2_set_src_and_div(int use_apb, uint32_t clock_reg);
 
 #endif /* SPI2_H */

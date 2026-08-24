@@ -167,3 +167,20 @@ int sh8601_init(void)
 
     return SPI2_OK;
 }
+
+int sh8601_scroll_def(uint16_t tfa, uint16_t vsa, uint16_t bfa)
+{
+    uint8_t VEC_ALIGN p[16];
+    p[0] = (uint8_t)(tfa >> 8); p[1] = (uint8_t)(tfa & 0xFFu);
+    p[2] = (uint8_t)(vsa >> 8); p[3] = (uint8_t)(vsa & 0xFFu);
+    p[4] = (uint8_t)(bfa >> 8); p[5] = (uint8_t)(bfa & 0xFFu);
+    return sh8601_cmd(0x33u, p, 6u);
+}
+
+int sh8601_scroll_start(uint16_t row)
+{
+    uint8_t VEC_ALIGN p[16];
+    p[0] = (uint8_t)(row >> 8);
+    p[1] = (uint8_t)(row & 0xFFu);
+    return sh8601_cmd(0x37u, p, 2u);
+}

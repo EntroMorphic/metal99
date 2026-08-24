@@ -99,13 +99,22 @@ static void route_pin(uint32_t gpio, uint32_t signal)
     GPIO_FUNC_OUT_SEL(gpio) = signal & 0x1FFu;
 }
 
-static void spi2_sync(void)
+/* Bounded. An unbounded spin here hangs the whole device if a bad clock config
+ * stops the SPI clock - which is exactly what happened during the Phase 0
+ * red-team, with no diagnostic at all. Generous: ~50 ms at 20 MHz. */
+#define SPI2_SPIN_LIMIT 1000000u
+
+static int spi2_sync(void)
 {
     /* ESP32-S3 latches configuration only when SPI_UPDATE is set; it
      * self-clears once applied. Skipping this silently transfers with the
      * PREVIOUS configuration. */
+    uint32_t guard = 0u;
     SPI_CMD = CMD_UPDATE;
-    while ((SPI_CMD & CMD_UPDATE) != 0u) { }
+    while ((SPI_CMD & CMD_UPDATE) != 0u) {
+        if (++guard > SPI2_SPIN_LIMIT) return SPI2_E_HANG;
+    }
+    return SPI2_OK;
 }
 
 /* ----------------------------------------------------------------- init */
@@ -151,7 +160,7 @@ void spi2_init(void)
 
     /* 7. Latch. Configuration written above does not take effect until
      *    SPI_UPDATE is pulsed. */
-    spi2_sync();
+    (void)spi2_sync();
 }
 
 /* ------------------------------------------------------------- transfer */
@@ -193,11 +202,15 @@ int spi2_xfer(const uint8_t *data, uint32_t len, int quad, int keep_cs)
     SPI_USER = USER_USR_MOSI | (quad ? USER_FWRITE_QUAD : 0u);
     SPI_MS_DLEN = (len * 8u) - 1u;   /* hardware wants bits-minus-one */
 
-    spi2_sync();
+    if (spi2_sync() != SPI2_OK) return SPI2_E_HANG;
 
     SPI_CMD = CMD_USR;
-    while ((SPI_CMD & CMD_USR) != 0u) { }
-
+    {
+        uint32_t guard = 0u;
+        while ((SPI_CMD & CMD_USR) != 0u) {
+            if (++guard > SPI2_SPIN_LIMIT) return SPI2_E_HANG;
+        }
+    }
     return SPI2_OK;
 }
 
@@ -215,4 +228,12 @@ int spi2_write(const uint8_t *data, uint32_t len, int quad)
         len  -= n;
     }
     return SPI2_OK;
+}
+
+int spi2_set_src_and_div(int use_apb, uint32_t clock_reg)
+{
+    SPI_CLK_GATE = CLKG_CLK_EN | CLKG_MST_CLK_ACTIVE
+                 | (use_apb ? CLKG_MST_CLK_SEL : 0u);
+    SPI_CLOCK = clock_reg;
+    return spi2_sync();
 }

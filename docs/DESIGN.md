@@ -636,6 +636,45 @@ No ESP-IDF, no FreeRTOS, no libc, no ROM calls.
 | GDMA instead of 64-byte FIFO | 6 % bus utilisation, 311 ms/frame | ~17x - the FIFO path is overhead-bound, not bus-bound |
 | PLL instead of ROM default | CPU 20 MHz | 12x on per-pixel work; flush is unaffected, being bus-bound |
 
+### 6.6f Red-team of Phase 0 (2026-08-24)
+
+Four findings from attacking the Phase 0 conclusions.
+
+**R1 - 0a's reasoning rested on a corrupted measurement.** Corrected inline in
+§6.4 above. The conclusion (0a is blocked on the PLL) survives; the reasoning
+did not. Noted at the time that 4.2 MHz matched no plausible clock, and moved
+on anyway - that instinct should have been followed.
+
+**R2 - unbounded spin loops could hang the device. REAL BUG, FIXED.**
+`spi2_sync()` and the `CMD_USR` wait in `spi2_xfer()` spun forever. A bad clock
+config stops the SPI clock, `SPI_UPDATE` never clears, and the board hangs with
+**no diagnostic at all** - which is exactly what happened during this red-team.
+Both now bound at `SPI2_SPIN_LIMIT` and return `SPI2_E_HANG`.
+
+A timeout had been added to the equivalent flush path in the ESP-IDF build and
+never carried into metal99. **Fixes do not migrate across rewrites by
+themselves.**
+
+The trigger was an arithmetic error of mine: `0x2102` was written intending
+`CLKCNT_H = 1`, but decodes to `H = 4, N = 2`, which is invalid because H must
+be <= N. Correct encoding is `0x2042`. Layout is `N << 12 | H << 6 | L`.
+
+**R3 - 0c was absence-of-evidence reasoning.** "Nothing moved" was read as
+"scroll is unimplemented". In a project with three documented silent-failure
+traps, a dead command path would have produced an identical observation.
+Retested with a positive control (alternating scroll animation against a
+brightness pulse on the same drawn image). **0c is marked PROVISIONAL until
+that control reports.**
+
+**R4 - an unevidenced claim.** "The SH8601 is a standard SDR QSPI device" was
+stated as fact; we have no datasheet. It is an **inference**. The 0b refutation
+does not depend on it - the IDF-side evidence (no DDR path for GP-SPI master
+writes) stands alone - but the sentence overstated what we know.
+
+**Instrument caveat.** Adding the spin guards moved the measured delta from 192
+to 201 cycles, about 4%. The safety fix perturbs the measuring instrument. True
+bus rate is still 40 MHz.
+
 ### 6.7 Transfer path: CPU FIFO first
 
 Milestone 2 uses the **64-byte CPU FIFO** (`SPI_W0..W15`), not DMA.

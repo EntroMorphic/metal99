@@ -37,7 +37,7 @@ static void colorbars(uint16_t *row, int y)
 
 /* Vertical gradient. One colour computed per ROW (448 values per frame), then
  * the row itself is a single vectorised broadcast fill - no per-pixel scalar. */
-static void gradient(uint16_t *row, int y)
+__attribute__((unused)) static void gradient(uint16_t *row, int y)
 {
     uint8_t v = (uint8_t)((y * 255) / (SH8601_HEIGHT - 1));
     vec_fill16(row, sh8601_rgb565(v, (uint8_t)(64u + v / 4u),
@@ -115,13 +115,80 @@ void app_entry(void)
     rc = sh8601_init();
     con_puts("  sh8601_init rc="); con_dec((int32_t)rc); con_puts("\r\n");
 
+    /* ---- RED TEAM: re-measure APB with the CORRECT method ----
+     * The original "APB is starved, 2.1 MHz" reading was taken while the
+     * FWRITE_QUAD bug was active, i.e. comparing 1-line against 1-line. It was
+     * an artifact. Measure again properly: same 64 bytes on 4 lines (128 spi
+     * clocks) vs 1 line (512), so the 384-clock delta isolates the bus rate. */
+    {
+        static uint8_t VEC_ALIGN probe[64];
+        int k, n;
+        /* N<<12 | H<<6 | L, with H <= N. 0x2102 (my earlier constant) decodes to
+         * H=4 N=2 which is INVALID and stops the clock -> device hang. */
+        static const uint32_t divs[3] = { 0x80000000u, 0x00001001u, 0x00002042u };
+        static const char *dname[3] = { "/1", "/2", "/3" };
+        uint32_t t0;
+
+        vec_fill16((uint16_t *)probe, 0x5A5Au, sizeof(probe) / VEC_BYTES);
+
+        for (k = 0; k < 6; k++) {
+            int apb = (k >= 3);
+            uint32_t q, sgl, d, khz;
+            if (spi2_set_src_and_div(apb, divs[k % 3]) != SPI2_OK) {
+                con_puts("  src="); con_puts(apb ? "APB " : "XTAL");
+                con_puts(" div="); con_puts(dname[k % 3]);
+                con_puts("  -> CLOCK STOPPED (sync timeout)\r\n");
+                continue;
+            }
+
+            t0 = cpu_cycles();
+            for (n = 0; n < 200; n++) (void)spi2_xfer(probe, 64u, 1, 0);
+            q = (cpu_cycles() - t0) / 200u;
+            t0 = cpu_cycles();
+            for (n = 0; n < 200; n++) (void)spi2_xfer(probe, 64u, 0, 0);
+            sgl = (cpu_cycles() - t0) / 200u;
+
+            d = (sgl > q) ? (sgl - q) : 1u;
+            khz = (384u * (CPU_HZ / 1000u)) / d;
+            con_puts("  src="); con_puts(apb ? "APB " : "XTAL");
+            con_puts(" div="); con_puts(dname[k % 3]);
+            con_puts("  delta="); con_dec((int32_t)d);
+            con_puts("  -> "); con_dec((int32_t)khz); con_puts(" kHz\r\n");
+        }
+        /* restore the known-good configuration before touching the panel */
+        spi2_set_src_and_div(0, 0x80000000u);
+        con_puts("  restored XTAL /1 (40 MHz)\r\n");
+    }
+
+    /* ---- PHASE 0c RETEST, now WITH A POSITIVE CONTROL ----
+     * The first run concluded "scroll not implemented" from "nothing moved".
+     * That is absence-of-evidence reasoning in a system with three documented
+     * silent-failure traps. If the command path had been dead at that moment,
+     * the observation would have been identical.
+     *
+     * So alternate two phases against the SAME drawn image:
+     *   A: animate 0x37 scroll     -> do the bars MOVE?
+     *   B: pulse 0x51 brightness   -> does the screen PULSE?   (control)
+     * B pulsing proves commands are live. Only then does A not moving mean
+     * "scroll is unimplemented" rather than "nothing was getting through". */
+    rc = sh8601_write_frame(colorbars);
+    con_puts("  bars drawn once, rc="); con_dec((int32_t)rc); con_puts("\r\n");
+    rc = sh8601_scroll_def(0u, SH8601_HEIGHT, 0u);
+    con_puts("  0x33 VSCRDEF rc="); con_dec((int32_t)rc); con_puts("\r\n");
+
     for (i = 0; ; i++) {
-        uint32_t t0 = cpu_cycles();
-        rc = sh8601_write_frame(((i & 1) == 0) ? colorbars : gradient);
-        con_puts(((i & 1) == 0) ? "  BARS     " : "  GRADIENT ");
-        con_puts("rc="); con_dec((int32_t)rc);
-        con_puts("  frame="); con_dec((int32_t)((cpu_cycles() - t0) / (CPU_HZ / 1000u)));
-        con_puts(" ms\r\n");
-        delay_ms(2000u);
+        int k;
+        con_puts("\r\n  [A] SCROLL 6s - do the bars MOVE?\r\n");
+        (void)sh8601_brightness(0xFFu);
+        for (k = 0; k < 60; k++) {
+            (void)sh8601_scroll_start((uint16_t)((k * 8) % SH8601_HEIGHT));
+            delay_ms(100u);
+        }
+        con_puts("  [B] CONTROL 6s - does the screen PULSE?\r\n");
+        (void)sh8601_scroll_start(0u);
+        for (k = 0; k < 6; k++) {
+            (void)sh8601_brightness(0x00u); delay_ms(500u);
+            (void)sh8601_brightness(0xFFu); delay_ms(500u);
+        }
     }
 }

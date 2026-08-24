@@ -31,7 +31,7 @@ have. The SH8601 is a standard SDR QSPI device.
 
 No 2x from DDR. The bandwidth table's DDR rows are unreachable on this board.
 
-## 0c — Panel-side vertical scroll: **REFUTED**
+## 0c — Panel-side vertical scroll: **PROVISIONAL (retest running)**
 
 Drew colour bars once, then animated only `0x37` VSCRSAR with `0x33` VSCRDEF
 set to `TFA=0, VSA=448, BFA=0` (sums to panel height, as MIPI DCS requires).
@@ -40,10 +40,19 @@ Every command returned `rc=0`.
 **The bars did not move.** The SH8601 does not implement DCS vertical scroll,
 at least not as sent.
 
-*Caveat:* `rc=0` only means our transaction completed; the panel is write-only
-to us. A different parameter encoding cannot be fully excluded. But this was
-budgeted as a cheap experiment, and chasing it further would make it a project.
-Revisit only if scrolling becomes a bottleneck in practice.
+**RED-TEAM RETRACTION.** This conclusion was drawn from *absence of evidence*.
+"Nothing moved" is also exactly what a dead command path looks like - and this
+project has three documented silent-failure traps (`FWRITE_QUAD` in the wrong
+register, missing `COLMOD`, ghost framebuffers x3). Concluding "unimplemented"
+without a positive control repeats the precise reasoning pattern that has
+burned us every previous time.
+
+Retest in progress: two 6-second phases against the SAME drawn image -
+[A] animate `0x37` scroll, [B] pulse `0x51` brightness as a control. Only if
+**B pulses and A does not move** is "scroll unimplemented" sound. If neither
+happens, the original finding was worthless.
+
+Status stays **PROVISIONAL** until that reports.
 
 ---
 
@@ -58,6 +67,16 @@ require 80 MHz (gated on PLL, panel acceptance still unknown) and DDR
 scrolling free. It is not available, so scrolling must be built from
 dirty-region updates. The one hardware shortcut that could have substituted for
 the software approach does not exist.
+
+**Measured clock sources** (red-team, corrected method):
+
+| source | /1 | /2 | /3 |
+|---|---|---|---|
+| XTAL | 38.2 MHz | 19.2 MHz | 13.7 MHz |
+| APB | 20.2 MHz | 10.1 MHz | 6.6 MHz |
+
+APB tracks the CPU at XTAL/2 with the PLL off, so XTAL is genuinely the fastest
+source available today. 0a stays blocked - now for a measured reason.
 
 **The remaining levers are exactly three, all high-confidence:**
 
