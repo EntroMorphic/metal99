@@ -1,0 +1,19 @@
+# ---- ESP-IDF build outputs (regenerate with idf.py build) ----
+build/
+sdkconfig
+sdkconfig.old
+
+# Fetched components: reproducible from idf_component.yml + dependencies.lock,
+# which ARE tracked. dependencies.lock pins BSP 2.0.0 (the SH8601 revision) and
+# is the thing that keeps the wrong panel driver from creeping back in.
+managed_components/
+
+# ---- upstream clone, reproducible ----
+# git clone --depth 1 \
+#   https://github.com/waveshareteam/ESP32-S3-Touch-AMOLED-1.8.git waveshare-demo
+waveshare-demo/
+
+# ---- editor / OS ----
+*.swp
+*~
+.DS_Store
