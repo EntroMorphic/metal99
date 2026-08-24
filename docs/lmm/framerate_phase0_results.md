@@ -6,7 +6,7 @@ the path forward is now unambiguous.
 
 ---
 
-## 0a — Bus clock ceiling: **BLOCKED (not refuted)**
+## 0a — Bus clock ceiling: **RESOLVED — 40 MHz is the maximum**
 
 Cannot be run yet. Our SPI source is **XTAL at 40 MHz**. Exceeding 40 MHz
 requires APB, which is PLL-derived, and the PLL is off (CPU measured at
@@ -16,7 +16,17 @@ requires APB, which is PLL-derived, and the PLL is off (CPU measured at
 preceding the expensive work; in fact it *depends* on Phase 2. Sequencing
 assumptions deserve the same scrutiny as technical ones.
 
-Deferred until the PLL is enabled, and folded into that milestone.
+**RESULT (2026-08-24), once the PLL made APB available.** The ESP32 emits at
+80 MHz fine - flush 17.15 -> 8.92 ms, 101.7 fps. **The panel does not accept
+it**: measured phases were 3.0 s / 0.6 s cycling every 3.6 s, but the observed
+display was ~15 s bars / ~30 s black, not tracking the phases. 80 MHz corrupts
+panel state and costs several re-inits to recover.
+
+No fallback rate exists. `MST_CLK_SEL` gives XTAL 40 or APB 80, and the divider
+is integer, so there is nothing between them. **40 MHz is the ceiling.**
+
+That makes full-frame 60 fps unreachable: 16.49 ms of wire against a 16.67 ms
+budget leaves 0.18 ms for everything else. See DESIGN.md 6.6h.
 
 ## 0b — DDR (double data rate): **REFUTED**
 

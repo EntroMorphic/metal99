@@ -257,3 +257,19 @@ int spi2_xfer_dma(const struct gdma_desc *chain, uint32_t len, int quad, int kee
     SPI_DMA_CONF = 0u;               /* hand the path back to the FIFO */
     return SPI2_OK;
 }
+
+int spi2_set_clock(uint32_t mhz)
+{
+    uint32_t gate = CLKG_CLK_EN | CLKG_MST_CLK_ACTIVE;
+
+    if (mhz == 40u) {
+        gate |= 0u;                       /* MST_CLK_SEL = 0 -> XTAL 40 MHz */
+    } else if (mhz == 80u) {
+        gate |= CLKG_MST_CLK_SEL;         /* MST_CLK_SEL = 1 -> APB          */
+    } else {
+        return SPI2_E_LEN;
+    }
+    SPI_CLK_GATE = gate;
+    SPI_CLOCK    = (1u << 31);            /* CLK_EQU_SYSCLK: no division     */
+    return spi2_sync();
+}

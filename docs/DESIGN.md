@@ -733,6 +733,51 @@ overhead it is measuring.
 *(Attribution is inference from the arithmetic and timing, not an isolated
 experiment - flagged as such rather than asserted.)*
 
+### 6.6h 80 MHz bus - REFUTED. 40 MHz is the panel's usable maximum.
+
+Experiment 0a, finally run once the PLL made APB 80 MHz available.
+
+**The ESP32 emits at 80 MHz perfectly.** Flush halved exactly as predicted:
+17.15 -> 8.92 ms, 101.7 fps, 92% wire utilisation.
+
+**The panel does not accept it.** Test alternated long 40 MHz phases with short
+80 MHz phases, each preceded by a full re-init at that clock. Measured phase
+timing was 3.0 s / 0.6 s, cycling every 3.6 s. Observed behaviour was ~15 s of
+bars then ~30 s of black - **not tracking the phases at all**. 80 MHz corrupts
+panel state, and the following 40 MHz re-inits need several cycles to recover
+it. `init rc=0` throughout, which as ever proves only that our transactions
+completed.
+
+**And there is no intermediate rate to fall back to.** `MST_CLK_SEL` picks XTAL
+(40 MHz) or APB (80 MHz), and the divider is integer:
+
+| source | /1 | /2 | /3 | /4 |
+|---|---|---|---|---|
+| XTAL | **40.0** | 20.0 | 13.3 | 10.0 |
+| APB | 80.0 (fails) | 40.0 | 26.7 | 20.0 |
+
+60 MHz would need 80/1.33 and 53 MHz 80/1.5 - neither is representable. There
+is nothing between 40 and 80.
+
+#### Consequence: full-frame 60 fps is not achievable on this hardware
+
+| | |
+|---|---|
+| Wire time at 40 MHz | **16.49 ms** |
+| 60 fps budget | 16.67 ms |
+| Left for ALL overhead and render | **0.18 ms** |
+| Currently used by overhead + render | 1.44 ms |
+
+Even with perfect banding (overhead ~0.05 ms) and perfect render/DMA overlap
+(render off the critical path), the best case is ~16.54 ms = **60.4 fps, a 0.8%
+margin**. That is not a steady 60 - any jitter breaks it.
+
+**60 fps of an INTERFACE remains entirely achievable**, because interfaces do
+not repaint every pixel every frame. At 19.2 MB/s effective, a 16.67 ms budget
+carries ~320 KB - 97% of a full frame, but **5x** a screen that updates 20% of
+its area. Elision is no longer the elegant option; it is the only route to a
+steady 60 Hz.
+
 ### 6.7 Transfer path: CPU FIFO first
 
 Milestone 2 uses the **64-byte CPU FIFO** (`SPI_W0..W15`), not DMA.

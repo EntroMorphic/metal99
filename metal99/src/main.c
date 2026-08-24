@@ -84,34 +84,33 @@ void app_entry(void)
     gdma_init();
     rc = sh8601_init();
     con_puts("sh8601_init rc="); con_dec((int32_t)rc); con_puts("\r\n");
-    con_puts("xport | render flush total | eff kB/s | wire-util% | fps\r\n");
+    con_puts("xport | render flush total | eff kB/s | fps\r\n");
+    sh8601_set_dma(1);
+
+    /* 40 MHz is the panel's usable maximum - see docs/DESIGN.md 6.6h.
+     * 80 MHz corrupts it and takes several re-inits to recover. */
+    (void)spi2_set_clock(40u);
 
     for (i = 0; ; i++) {
         const sh8601_stats *st;
-        uint32_t kbps, util, fps10;
+        uint32_t kbps, fps10;
 
-        sh8601_set_dma(i & 1);
         rc = sh8601_write_frame(colorbars);
         if (rc != SPI2_OK) {
             con_puts("  frame FAILED rc="); con_dec((int32_t)rc); con_puts("\r\n");
-            delay_ms(1000u); continue;
+            delay_ms(500u); continue;
         }
-        st = sh8601_last_frame();
-        kbps  = (st->total_cycles == 0u) ? 0u
-              : (uint32_t)(((uint64_t)st->bytes * CPU_HZ) / st->total_cycles / 1024u);
-        util  = (st->flush_cycles == 0u) ? 0u
-              : (WIRE_CYCLES_PER_FRAME_20M * (CPU_HZ / 1000000u) / 20u * 100u) / st->flush_cycles;
-        fps10 = (st->total_cycles == 0u) ? 0u
-              : (uint32_t)(((uint64_t)CPU_HZ * 10u) / st->total_cycles);
+        if ((i % 20) != 0) continue;
 
-        con_puts(((i & 1) == 0) ? " FIFO | " : " GDMA | ");
+        st    = sh8601_last_frame();
+        kbps  = (uint32_t)(((uint64_t)st->bytes * CPU_HZ) / st->total_cycles / 1024u);
+        fps10 = (uint32_t)(((uint64_t)CPU_HZ * 10u) / st->total_cycles);
+        con_puts(" GDMA | ");
         put_ms("", st->render_cycles);
         put_ms("", st->flush_cycles);
         put_ms("", st->total_cycles);
         con_puts("| "); con_dec((int32_t)kbps); con_puts(" kB/s ");
-        con_puts("| "); con_dec((int32_t)util); con_puts("% ");
         con_puts("| "); con_dec((int32_t)(fps10 / 10u)); con_putc('.');
         con_dec((int32_t)(fps10 % 10u)); con_puts("\r\n");
-        delay_ms(400u);
     }
 }

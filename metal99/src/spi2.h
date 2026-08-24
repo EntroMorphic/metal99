@@ -21,6 +21,19 @@
 #define SPI2_E_ALIGN (-3)    /* data not 16-byte aligned (see contract below) */
 #define SPI2_E_HANG  (-4)    /* peripheral did not complete - clock stopped? */
 
+/*
+ * Set the SPI bus clock. Legitimate configuration, not probing: it changes how
+ * REAL frames are sent, and correctness is judged by the panel rendering them.
+ *
+ *   40 -> XTAL  /1   (always available)
+ *   80 -> APB   /1   (requires the PLL; APB is 20 MHz without it)
+ *
+ * 80 MHz is above the vendor BSP's choice of 40. Whether the SH8601 accepts it
+ * is the open question - a panel that cannot keep up shows corruption, which
+ * is visible immediately.
+ */
+int spi2_set_clock(uint32_t mhz);
+
 /* Clock-gate, reset, route pins through the GPIO matrix, configure mode 0. */
 void spi2_init(void);
 
