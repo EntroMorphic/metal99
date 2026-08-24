@@ -1,0 +1,193 @@
+#include "spi2.h"
+#include "io.h"
+
+/* ---------------------------------------------------------------- bases */
+#define SYSTEM_PERIP_CLK_EN0  REG32(0x600C0018u)
+#define SYSTEM_PERIP_RST_EN0  REG32(0x600C0020u)
+#define SYSTEM_SPI2_BIT       (1u << 6)
+
+#define GPIO_ENABLE_W1TS      REG32(0x60004024u)
+#define GPIO_FUNC_OUT_SEL(n)  REG32(0x60004554u + 4u * (uint32_t)(n))
+#define IO_MUX_GPIO(n)        REG32(0x60009004u + 4u * (uint32_t)(n))
+
+#define SPI2_BASE   0x60024000u
+#define SPI_CMD     REG32(SPI2_BASE + 0x00u)
+#define SPI_CTRL    REG32(SPI2_BASE + 0x08u)
+#define SPI_CLOCK   REG32(SPI2_BASE + 0x0Cu)
+#define SPI_USER    REG32(SPI2_BASE + 0x10u)
+#define SPI_USER1   REG32(SPI2_BASE + 0x14u)
+#define SPI_USER2   REG32(SPI2_BASE + 0x18u)
+#define SPI_MS_DLEN REG32(SPI2_BASE + 0x1Cu)
+#define SPI_MISC    REG32(SPI2_BASE + 0x20u)
+#define SPI_W(i)    REG32(SPI2_BASE + 0x98u + 4u * (uint32_t)(i))
+#define SPI_CLK_GATE REG32(SPI2_BASE + 0xE8u)
+
+/* ---------------------------------------------------------------- fields */
+#define CMD_USR            (1u << 24)
+#define CMD_UPDATE         (1u << 23)
+
+#define USER_DOUTDIN       (1u << 0)
+#define USER_CK_OUT_EDGE   (1u << 9)
+#define USER_USR_MOSI      (1u << 27)
+#define USER_USR_MISO      (1u << 28)
+#define USER_USR_DUMMY     (1u << 29)
+#define USER_USR_ADDR      (1u << 30)
+#define USER_USR_COMMAND   (1u << 31)
+
+/* NOTE: fwrite_quad is in SPI_USER, NOT SPI_CTRL. Only fread_quad lives in
+ * CTRL. Setting it in the wrong register fails silently - the transfer still
+ * completes, just on one line. */
+#define USER_FWRITE_QUAD   (1u << 13)
+#define CTRL_D_POL         (1u << 19)
+#define CTRL_Q_POL         (1u << 18)
+
+#define MISC_CS0_DIS       (1u << 0)
+#define MISC_CS1_DIS       (1u << 1)
+#define MISC_CS2_DIS       (1u << 2)
+#define MISC_CK_IDLE_EDGE  (1u << 29)
+#define MISC_CS_KEEP_ACTIVE (1u << 30)
+
+#define CLKG_CLK_EN        (1u << 0)
+#define CLKG_MST_CLK_ACTIVE (1u << 1)
+#define CLKG_MST_CLK_SEL   (1u << 2)
+
+#define IOMUX_MCU_SEL_S    12
+#define IOMUX_FUN_DRV_S    10
+#define IOMUX_FUN_IE       (1u << 9)
+
+/* -------------------------------------------------------------- pin map */
+/* Board wires CLK/CS opposite to the IO_MUX defaults for these pins, so every
+ * signal must go through the GPIO matrix. */
+#define PIN_CS   12
+#define PIN_CLK  11
+#define PIN_D0    4
+#define PIN_D1    5
+#define PIN_D2    6
+#define PIN_D3    7
+
+#define SIG_FSPICLK  101
+#define SIG_FSPIQ    102   /* D1 */
+#define SIG_FSPID    103   /* D0 */
+#define SIG_FSPIHD   104   /* D3 */
+#define SIG_FSPIWP   105   /* D2 */
+#define SIG_FSPICS0  110
+
+/* ------------------------------------------------------------- timebase */
+/* TODO calibrate. Over-estimating CPU frequency makes every delay LONGER than
+ * asked for, which is the safe direction: the SH8601 sleep-out wait is a
+ * minimum, not a target. */
+/* MEASURED 2026-08-24: ROM leaves the CPU at 20 MHz (XTAL/2). If the PLL is
+ * ever enabled this MUST change or every delay shortens by the same factor. */
+#define CPU_HZ_ASSUMED 20000000u
+
+static uint32_t ccount(void)
+{
+    uint32_t c;
+    __asm__ __volatile__ ("rsr %0, ccount" : "=a"(c));
+    return c;
+}
+
+void delay_ms(uint32_t ms)
+{
+    uint32_t start = ccount();
+    uint32_t want  = ms * (CPU_HZ_ASSUMED / 1000u);
+    while ((ccount() - start) < want) { }
+}
+
+/* ----------------------------------------------------------------- pins */
+static void route_pin(uint32_t gpio, uint32_t signal)
+{
+    /* IO_MUX: hand the pad to the GPIO matrix (function 1), strongest drive,
+     * input buffer on (QSPI lines are bidirectional even if we only write). */
+    IO_MUX_GPIO(gpio) = (1u << IOMUX_MCU_SEL_S)
+                      | (3u << IOMUX_FUN_DRV_S)
+                      | IOMUX_FUN_IE;
+
+    /* Drive the pad. */
+    GPIO_ENABLE_W1TS = (1u << gpio);
+
+    /* Matrix: peripheral signal -> pad. OEN_SEL=0 lets the peripheral own the
+     * output-enable; no inversion. */
+    GPIO_FUNC_OUT_SEL(gpio) = signal & 0x1FFu;
+}
+
+/* ----------------------------------------------------------------- init */
+void spi2_init(void)
+{
+    /* 1. Ungate the peripheral clock, then pulse its reset. Order matters:
+     *    a reset applied while gated does not take. */
+    SYSTEM_PERIP_CLK_EN0 = SYSTEM_PERIP_CLK_EN0 | SYSTEM_SPI2_BIT;
+    SYSTEM_PERIP_RST_EN0 = SYSTEM_PERIP_RST_EN0 | SYSTEM_SPI2_BIT;
+    SYSTEM_PERIP_RST_EN0 = SYSTEM_PERIP_RST_EN0 & ~SYSTEM_SPI2_BIT;
+
+    /* 2. Internal clock gate. MST_CLK_SEL: 0 = XTAL, 1 = APB (PLL-derived).
+     *    The ROM leaves the PLL OFF (CPU measured at 20 MHz = XTAL/2), so APB
+     *    is starved - selecting it gave a ~2.1 MHz bus. XTAL is a steady
+     *    40 MHz, which is exactly the rate the SH8601 wants. */
+    SPI_CLK_GATE = CLKG_CLK_EN | CLKG_MST_CLK_ACTIVE;   /* MST_CLK_SEL = 0 */
+
+    /* 3. Pins. */
+    route_pin(PIN_CLK, SIG_FSPICLK);
+    route_pin(PIN_CS,  SIG_FSPICS0);
+    route_pin(PIN_D0,  SIG_FSPID);
+    route_pin(PIN_D1,  SIG_FSPIQ);
+    route_pin(PIN_D2,  SIG_FSPIWP);
+    route_pin(PIN_D3,  SIG_FSPIHD);
+
+    /* 4. Clock: source is XTAL @ 40 MHz and the panel runs at 40 MHz, so
+     *    bypass the divider entirely with CLK_EQU_SYSCLK. */
+    SPI_CLOCK = (1u << 31);  /* CLK_EQU_SYSCLK: f_spi = f_source = 40 MHz */
+
+    /* 5. SPI mode 0: clock idles low, data launched on the falling edge so it
+     *    is stable at the rising edge the panel samples on. */
+    SPI_MISC  = MISC_CS1_DIS | MISC_CS2_DIS;   /* CS0 enabled, CK_IDLE_EDGE=0 */
+    SPI_USER  = USER_USR_MOSI;                 /* MOSI only; no cmd/addr/dummy */
+    SPI_USER1 = 0u;
+    SPI_USER2 = 0u;
+    SPI_CTRL  = CTRL_D_POL | CTRL_Q_POL;       /* idle high, MSB-first */
+}
+
+uint32_t spi2_probe(void) { return SPI_CLOCK; }
+
+/* ------------------------------------------------------------- transfer */
+static void spi2_sync(void)
+{
+    /* ESP32-S3 latches configuration only when SPI_UPDATE is set; it
+     * self-clears once applied. Skipping this silently transfers with the
+     * PREVIOUS configuration. */
+    SPI_CMD = CMD_UPDATE;
+    while ((SPI_CMD & CMD_UPDATE) != 0u) { }
+}
+
+void spi2_xfer(const uint8_t *data, uint32_t len, int quad, int keep_cs)
+{
+    uint32_t i;
+
+    if (len == 0u || len > SPI2_FIFO_BYTES) return;
+
+    /* Pack bytes into W0..W15. The peripheral shifts out byte 0 of each word
+     * first, and Xtensa is little-endian, so plain byte-order packing puts
+     * bytes on the wire in array order. */
+    for (i = 0u; i < 16u; i++) {
+        uint32_t w = 0u;
+        uint32_t b;
+        for (b = 0u; b < 4u; b++) {
+            uint32_t idx = i * 4u + b;
+            if (idx < len) w |= ((uint32_t)data[idx]) << (b * 8u);
+        }
+        SPI_W(i) = w;
+    }
+
+    SPI_CTRL = CTRL_D_POL | CTRL_Q_POL;
+    SPI_MISC = MISC_CS1_DIS | MISC_CS2_DIS | (keep_cs ? MISC_CS_KEEP_ACTIVE : 0u);
+    SPI_USER = USER_USR_MOSI | (quad ? USER_FWRITE_QUAD : 0u);
+    SPI_MS_DLEN = (len * 8u) - 1u;
+
+    spi2_sync();
+
+    SPI_CMD = CMD_USR;
+    while ((SPI_CMD & CMD_USR) != 0u) { }
+}
+
+void spi2_set_clock_reg(uint32_t v) { SPI_CLOCK = v; spi2_sync(); }
+uint32_t spi2_get_clock_reg(void)   { return SPI_CLOCK; }

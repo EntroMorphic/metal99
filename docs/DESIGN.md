@@ -31,7 +31,7 @@ Explicitly out of scope, with reasons:
 |---|---|
 | **PSRAM** | Octal PSRAM timing training is the single hardest part of a from-scratch S3 bring-up. Band rendering into internal SRAM is *already* the faster architecture (measured §4), so skipping PSRAM removes the largest risk at no cost. |
 | **Interrupts** | Poll the SPI2 done bit. No vector table, no exception handlers, no `xt_ints`. |
-| **240 MHz clock** | Stay at the ROM default until correctness is proven. Clock is a later multiplier, not a prerequisite. |
+| **240 MHz clock** | Deferred, but see the warning in §4.3 — the ROM default is **20 MHz**, not 240, so this is required before any performance target is reachable. |
 | **Flash XIP / MMU / cache** | Image is RAM-resident. No cache configuration means no cache-coherency class of bug. |
 | **BitNet / ML** | Out of scope for this project. |
 | **Wi-Fi / BT** | Would require Espressif's closed-source blobs, violating constraint 2. |
@@ -174,6 +174,23 @@ Band-height sweep (solid fill):
   should sweep past 64 — the ESP-IDF build was capped by its staging buffer, not
   by the hardware.
 
+### 4.3 The CPU runs at 20 MHz until we change it
+
+**Measured 2026-08-24: 20.0 MHz** (240,000,000 cycles took 12.027 s, twice).
+That is the ROM default — XTAL/2, with the PLL off.
+
+Every number in the table above was taken at **240 MHz** under ESP-IDF. metal99
+currently runs the CPU **12x slower**. Consequences:
+
+- Render times scale directly: the 11.57 ms plasma becomes ~139 ms at 20 MHz.
+- Flush does **not** scale — it is bound by the 40 MHz SPI bus, not the CPU.
+- Any `ccount`-based delay depends on this. `CPU_HZ_ASSUMED` in `spi2.c` is set
+  to the measured 20 MHz and **must be updated** if the PLL is ever enabled, or
+  every delay silently shortens by the same factor.
+
+Enabling the PLL therefore moves from "nice later" to **a prerequisite for
+Milestone 4**. It is not needed for Milestone 2, which is about correctness.
+
 ### 4.2 Known-bad path
 
 The ESP-IDF SPI master **cannot DMA out of PSRAM**; it silently bounces through
@@ -283,10 +300,41 @@ Required settings: SPI mode 0, MSB first, 40 MHz, CS asserted for the whole
 transaction, command phase 32 bits on **one** line, data phase on **four** lines
 for pixels and **one** line for parameters.
 
-> **Unverified:** exact bit positions within `SPI_USER`, `SPI_USER1`, `SPI_USER2`,
-> `SPI_CTRL`, and the `SPI_CLOCK` divider encoding are not yet transcribed from
-> the TRM. They must be read from the ESP32-S3 TRM SPI chapter before coding.
-> This is the largest remaining unknown in Milestone 2.
+**RESOLVED 2026-08-24 — implemented and verified on hardware (`src/spi2.c`).**
+
+| Field | Register | Bit |
+|---|---|---|
+| `USR` (start) | `SPI_CMD` | 24 |
+| `UPDATE` (latch config) | `SPI_CMD` | 23 |
+| `USR_MOSI` | `SPI_USER` | 27 |
+| **`FWRITE_QUAD`** | **`SPI_USER`** | **13** |
+| `D_POL` / `Q_POL` | `SPI_CTRL` | 19 / 18 |
+| `CS0/1/2_DIS` | `SPI_MISC` | 0 / 1 / 2 |
+| `CS_KEEP_ACTIVE` | `SPI_MISC` | 30 |
+| `MS_DATA_BITLEN` | `SPI_MS_DLEN` | 0..17 |
+| `CLK_EQU_SYSCLK` | `SPI_CLOCK` | 31 |
+| `CLK_EN`/`MST_CLK_ACTIVE`/`MST_CLK_SEL` | `SPI_CLK_GATE` (`0xE8`) | 0 / 1 / 2 |
+
+> **Trap: `FWRITE_QUAD` lives in `SPI_USER`, not `SPI_CTRL`.** Only *`FREAD`*`_QUAD`
+> is in CTRL. Putting it in CTRL fails **silently** — the transfer still
+> completes, just on one line. Caught only because quad and single transfers
+> timed identically.
+
+> **Trap: clock source must be XTAL.** `MST_CLK_SEL` 0 = XTAL, 1 = APB. The ROM
+> leaves the **PLL off**, so APB is starved and selecting it yielded a 2.1 MHz
+> bus. XTAL is a steady 40 MHz — exactly the panel's rate — so
+> `MST_CLK_SEL = 0` plus `CLK_EQU_SYSCLK` (bypass divider) gives 40 MHz with no
+> PLL work at all.
+
+Measured after the fix, 300-sample averages, 64 B on 4 lines (128 spi clocks)
+vs 1 line (512), so per-call overhead cancels exactly:
+
+```
+64B quad=1117 single=1309 delta=192 -> 40000 kHz   PASS
+```
+
+Predicted delta 192 cycles; measured 192. A deliberate /2 divider measured
+19,948 kHz. Bus rate confirmed at **40.0 MHz with quad mode active**.
 
 ### 6.5 SH8601 QSPI framing
 
@@ -467,7 +515,8 @@ Each milestone has a criterion that fails loudly rather than silently.
 | # | Deliverable | Success criterion | Status |
 |---|---|---|---|
 | 1 | Boot, console, watchdogs | Stable heartbeat over USB-Serial-JTAG, no reset loop | **DONE** — 960 B image |
-| 2 | SH8601 from registers | Color bars R/G/B/white/black visible on panel | specified |
+| 2a | SPI2 from registers | 40 MHz bus, quad mode confirmed by timing | **DONE** — 40000 kHz, PASS |
+| 2b | SH8601 from registers | Color bars R/G/B/white/black visible on panel | specified |
 | 3 | GDMA transfer | Same bars, full frame under 25 ms | specified |
 | 4 | Renderer integration | `render_c99.c` plasma at >= 25 fps | specified |
 | 5 | Messaging layer | Opcode stream drives the panel; `OP_PRESENT` produces a visible frame | specified |
@@ -483,7 +532,8 @@ not constitute success.
 
 | Risk | Severity | Mitigation |
 |---|---|---|
-| SPI2 register bit layouts not yet transcribed (§6.4) | **High** | Read TRM SPI chapter before coding. Largest unknown. |
+| ~~SPI2 register bit layouts~~ | ~~High~~ | **RESOLVED** — implemented and verified, §6.4 |
+| CPU at 20 MHz starves rendering (§4.3) | **High** | PLL enablement required before Milestone 4 |
 | D0–D3 to FSPID/Q/WP/HD mapping wrong (§6.3) | Medium | Produces scrambled — not blank — output; diagnosable from bars |
 | QSPI failures are silent | Medium | FIFO before DMA; bars before animation |
 | Concurrency rewrite (§7.3) larger than estimated | Medium | Empty critical sections initially; no ISR exists yet |
