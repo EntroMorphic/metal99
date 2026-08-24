@@ -55,4 +55,15 @@ int spi2_write(const uint8_t *data, uint32_t len, int quad);
 /* Red-team hooks: re-measure the APB clock source with a CORRECT method. */
 int spi2_set_src_and_div(int use_apb, uint32_t clock_reg);
 
+/*
+ * Detach/reattach CS from the SPI peripheral.
+ *
+ * Bus probing drives real bytes down the wire. With CS asserted the PANEL
+ * receives every one of them as commands - which corrupted its state during
+ * the Phase 0 red-team and blacked the screen. Park CS high first so probe
+ * traffic goes nowhere.
+ */
+void spi2_cs_detach(void);
+void spi2_cs_attach(void);
+
 #endif /* SPI2_H */

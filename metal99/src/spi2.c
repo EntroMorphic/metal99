@@ -237,3 +237,18 @@ int spi2_set_src_and_div(int use_apb, uint32_t clock_reg)
     SPI_CLOCK = clock_reg;
     return spi2_sync();
 }
+
+/* GPIO matrix signal 128 = "driven by the GPIO_OUT register", i.e. plain GPIO. */
+#define SIG_GPIO_OUT 256u   /* SIG_GPIO_OUT_IDX on ESP32-S3; fits the 9-bit field */
+#define GPIO_OUT_W1TS_REG_ REG32(0x60004008u)
+
+void spi2_cs_detach(void)
+{
+    GPIO_OUT_W1TS_REG_ = (1u << PIN_CS);          /* park HIGH = deselected */
+    GPIO_FUNC_OUT_SEL(PIN_CS) = SIG_GPIO_OUT;     /* take it off the peripheral */
+}
+
+void spi2_cs_attach(void)
+{
+    GPIO_FUNC_OUT_SEL(PIN_CS) = SIG_FSPICS0;      /* hand it back to SPI2 */
+}

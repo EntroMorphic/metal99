@@ -659,12 +659,24 @@ The trigger was an arithmetic error of mine: `0x2102` was written intending
 `CLKCNT_H = 1`, but decodes to `H = 4, N = 2`, which is invalid because H must
 be <= N. Correct encoding is `0x2042`. Layout is `N << 12 | H << 6 | L`.
 
-**R3 - 0c was absence-of-evidence reasoning.** "Nothing moved" was read as
-"scroll is unimplemented". In a project with three documented silent-failure
-traps, a dead command path would have produced an identical observation.
-Retested with a positive control (alternating scroll animation against a
-brightness pulse on the same drawn image). **0c is marked PROVISIONAL until
-that control reports.**
+**R3 - 0c was absence-of-evidence reasoning. RESOLVED.** "Nothing moved" was
+read as "scroll is unimplemented", when a dead command path produces an
+identical observation. Retested with a positive control: phase B **blinked**
+(brightness reached the panel) while phase A left the bars **stationary**.
+Control passed, so the negative is real. **0c REFUTED, properly.**
+
+*A correct conclusion from invalid reasoning is not a result - it is a
+coincidence you have not caught yet.*
+
+**R5 - the probe corrupted the device under test. FIXED.** The clock sweep drove
+1,200 transfers of filler with **CS asserted**, so the panel received all of it
+as commands and blacked out. Bus probing now parks CS high
+(`GPIO_FUNC_OUT_SEL = 256`, the `SIG_GPIO_OUT_IDX` "driven by GPIO_OUT" signal)
+and reattaches it afterwards. Measure the bus, not the device on it.
+
+The R1 caveat had already noted that the safety guards perturbed the
+*instrument* by 4%. That was written too narrowly: the probe was perturbing the
+*system*.
 
 **R4 - an unevidenced claim.** "The SH8601 is a standard SDR QSPI device" was
 stated as fact; we have no datasheet. It is an **inference**. The 0b refutation

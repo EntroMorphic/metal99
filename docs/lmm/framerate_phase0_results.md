@@ -31,7 +31,7 @@ have. The SH8601 is a standard SDR QSPI device.
 
 No 2x from DDR. The bandwidth table's DDR rows are unreachable on this board.
 
-## 0c — Panel-side vertical scroll: **PROVISIONAL (retest running)**
+## 0c — Panel-side vertical scroll: **REFUTED (with positive control)**
 
 Drew colour bars once, then animated only `0x37` VSCRSAR with `0x33` VSCRDEF
 set to `TFA=0, VSA=448, BFA=0` (sums to panel height, as MIPI DCS requires).
@@ -52,7 +52,21 @@ Retest in progress: two 6-second phases against the SAME drawn image -
 **B pulses and A does not move** is "scroll unimplemented" sound. If neither
 happens, the original finding was worthless.
 
-Status stays **PROVISIONAL** until that reports.
+**RESULT (2026-08-24): control PASSED, scroll REFUTED.**
+
+Observed: phase B **blinked** (brightness pulse reached the panel), phase A left
+the bars **stationary**. The command path was demonstrably live at the moment
+scroll failed to move anything, so the negative is real rather than an artifact
+of a dead bus.
+
+The SH8601 does not implement MIPI DCS vertical scroll. Scrolling must be built
+from dirty-region updates.
+
+**Method note.** The first run reached the same conclusion from "nothing moved"
+alone - and would have reached it even if nothing was getting through. The
+conclusion happened to be right; the reasoning was not, and the difference only
+became visible because a control was added. *A correct conclusion from invalid
+reasoning is not a result, it is a coincidence you have not caught yet.*
 
 ---
 

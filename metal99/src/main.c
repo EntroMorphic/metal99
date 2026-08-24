@@ -131,6 +131,11 @@ void app_entry(void)
 
         vec_fill16((uint16_t *)probe, 0x5A5Au, sizeof(probe) / VEC_BYTES);
 
+        /* Park CS high: probe traffic must not reach the panel. Driving 1200
+         * garbage transfers at six clock rates into a live panel corrupted it
+         * and blacked the screen. Measure the bus, not the device on it. */
+        spi2_cs_detach();
+
         for (k = 0; k < 6; k++) {
             int apb = (k >= 3);
             uint32_t q, sgl, d, khz;
@@ -156,8 +161,9 @@ void app_entry(void)
             con_puts("  -> "); con_dec((int32_t)khz); con_puts(" kHz\r\n");
         }
         /* restore the known-good configuration before touching the panel */
-        spi2_set_src_and_div(0, 0x80000000u);
-        con_puts("  restored XTAL /1 (40 MHz)\r\n");
+        (void)spi2_set_src_and_div(0, 0x80000000u);
+        spi2_cs_attach();
+        con_puts("  restored XTAL /1 (40 MHz), CS reattached\r\n");
     }
 
     /* ---- PHASE 0c RETEST, now WITH A POSITIVE CONTROL ----
