@@ -67,6 +67,9 @@ static gdma_desc g_desc;               /* one row fits: 736 B < 4095 B */
 
 void sh8601_set_dma(int on) { g_use_dma = on; }
 
+static int g_overlap = 1;
+void sh8601_set_overlap(int on) { g_overlap = on; }
+
 /* Chunked send with CS held throughout; only the very last chunk of the very
  * last row releases it. The panel treats a CS rise as end-of-write. */
 static int stream(const uint8_t *d, uint32_t n, int final_row)
@@ -215,6 +218,18 @@ int sh8601_write_span(uint16_t y0, uint16_t y1, void (*rowfn)(uint16_t *row, int
         if (rc != SPI2_OK) return rc;
 
         pending = 1; pend_rows = rows;
+
+        /* Overlap disabled: collect immediately, so the next band's render
+         * cannot run concurrently. This is the control for the overlap claim. */
+        if (!g_overlap) {
+            t_mark = cpu_cycles();
+            rc = spi2_dma_finish();
+            g_stats.flush_cycles += cpu_cycles() - t_mark;
+            if (rc != SPI2_OK) return rc;
+            g_stats.bytes += (uint32_t)rows * SH8601_WIDTH * 2u;
+            pending = 0;
+        }
+
         y += rows;
         b ^= 1;
     }

@@ -109,7 +109,9 @@ static void route_pin(uint32_t gpio, uint32_t signal)
 /* Bounded. An unbounded spin here hangs the whole device if a bad clock config
  * stops the SPI clock - which is exactly what happened during the Phase 0
  * red-team, with no diagnostic at all. Generous: ~50 ms at 20 MHz. */
-#define SPI2_SPIN_LIMIT 1000000u
+/* 10x the longest legitimate wait (one 32-row band, ~1.2ms). Was 1,000,000,
+ * which made a failed first transfer cost 293ms before its retry ran. */
+#define SPI2_SPIN_LIMIT 200000u
 
 static int spi2_sync(void)
 {
@@ -238,6 +240,9 @@ int spi2_write(const uint8_t *data, uint32_t len, int quad)
     return SPI2_OK;
 }
 
+/* Chain currently armed, so a failed transfer can be re-armed. */
+static const gdma_desc *g_inflight;
+
 int spi2_dma_start(const struct gdma_desc *chain, uint32_t len, int quad, int keep_cs)
 {
     if (chain == NULL) return SPI2_E_NULL;
@@ -258,8 +263,9 @@ int spi2_dma_start(const struct gdma_desc *chain, uint32_t len, int quad, int ke
     /* ORDER: DMA link first, then apply config, then trigger. Applying config
      * before starting the link left the engine parked on the first transfer -
      * see docs/DESIGN.md 6.6i. */
+    g_inflight = (const gdma_desc *)chain;
     gdma_start((const gdma_desc *)chain);
-    if (spi2_sync() != SPI2_OK) { SPI_DMA_CONF = 0u; return SPI2_E_HANG; }
+    if (spi2_sync() != SPI2_OK) { SPI_DMA_CONF = 0u; return SPI2_E_SYNC; }
     SPI_CMD = CMD_USR;
     return SPI2_OK;
 }
@@ -268,9 +274,30 @@ int spi2_dma_finish(void)
 {
     uint32_t guard = 0u;
     while ((SPI_CMD & CMD_USR) != 0u) {
-        if (++guard > SPI2_SPIN_LIMIT) { SPI_DMA_CONF = 0u; return SPI2_E_HANG; }
+        if (++guard > SPI2_SPIN_LIMIT) { SPI_DMA_CONF = 0u; return SPI2_E_USR; }
     }
-    if (gdma_wait() != GDMA_OK) { SPI_DMA_CONF = 0u; return SPI2_E_HANG; }
+    if (gdma_wait() != GDMA_OK) {
+        /* The engine can swallow the very first START after init: it stays
+         * PARKED, the descriptor's owner bit is never cleared, and SPI happily
+         * ships stale AFIFO contents. Root cause is not fully understood after
+         * several attempts, so this RECOVERS rather than pretending it cannot
+         * happen - reset the channel, re-arm, retry once. Documented as a
+         * workaround, not a fix. */
+        if (g_inflight != NULL) {
+            /* Re-arm WITHOUT resetting the channel. Resetting first (via
+             * gdma_restart) also failed, which suggests the reset undoes
+             * whatever the first arm primed. */
+            gdma_start(g_inflight);
+            SPI_CMD = CMD_USR;
+            guard = 0u;
+            while ((SPI_CMD & CMD_USR) != 0u) {
+                if (++guard > SPI2_SPIN_LIMIT) { SPI_DMA_CONF = 0u; return SPI2_E_USR; }
+            }
+            if (gdma_wait() == GDMA_OK) { SPI_DMA_CONF = 0u; return SPI2_OK; }
+        }
+        SPI_DMA_CONF = 0u;
+        return SPI2_E_DMA;
+    }
     SPI_DMA_CONF = 0u;
     return SPI2_OK;
 }

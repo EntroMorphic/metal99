@@ -884,6 +884,48 @@ schedule.
 The FIFO transport is retained alongside, unbanded and synchronous, because
 measuring both on identical work has repeatedly caught wrong assumptions.
 
+### 6.6k Red-team of banding, overlap and elision
+
+Six findings. Two were only findable by removing a safety net.
+
+**R-A - the overlap claim was unverifiable from telemetry.** `flush` is measured
+as time spent *waiting*, which rendering has already shortened, so the numbers
+could not distinguish overlap from no-overlap. Added `sh8601_set_overlap()` as a
+control: **ON 16.6 ms / OFF 17.4 ms**. Overlap is real, and *load-bearing* -
+banding alone misses 60 Hz at 104% of budget.
+
+**R-B - dirty-tracking leak, found only with resync OFF.** The demo marked
+`g_bar_prev`, which held the position from TWO frames ago. It worked by
+accident: a 4px step and 24px bar overlap so heavily the union covered the gap.
+**At the wrap the positions stop being adjacent and the cover fails**, leaving
+red behind permanently. Resync scrubbed the evidence every 120 frames, so
+~11,000 frames had already run "verified".
+
+> The safety net worked so well it hid the thing it was protecting against.
+> `elide_set_resync(0)` exists so this is testable.
+
+**R-C - full-frame 60 Hz was a knife-edge.** 16.6 ms against 16.67 ms is 70 us
+of slack. Measured: **19 late frames against 14 resyncs** - every full-repaint
+resync missed its deadline. Fixed by making resync **rolling**: refresh
+`448/120 = 4` rows per frame instead of everything every 120 frames. Same drift
+protection, no 16.6 ms spike. Late frames in steady state went to **zero**.
+
+**Cold-start DMA failure returned in the banded path.** Characterised, not
+explained: the first `gdma_start()` after init is ignored - engine PARKED,
+descriptor never fetched - while a second start takes **provided the channel is
+not reset in between**. Resetting undoes whatever the first arm primes, which is
+why an earlier reset-then-retry did not work. Recovery is a re-arm without
+reset. Priming with a dummy descriptor at init did **not** work.
+
+**Guards were 53x-106x oversized.** The longest legitimate wait is one 32-row
+band, ~1.18 ms. Limits of 1,000,000 / 2,000,000 made a failed first transfer
+cost **293 ms** before its retry ran. Cut to 200,000 (11x margin): boot frame
+**292.8 -> 45.3 ms**, late frames **19 -> 2**, both at boot.
+
+**Per-stage error codes.** A single `SPI2_E_HANG` said a transfer failed but not
+*where*, and three rounds were spent fixing the wrong stage. Now `E_SYNC`,
+`E_USR`, `E_DMA`.
+
 ### 6.7 Transfer path: CPU FIFO first
 
 Milestone 2 uses the **64-byte CPU FIFO** (`SPI_W0..W15`), not DMA.

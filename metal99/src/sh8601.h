@@ -90,6 +90,14 @@ const sh8601_stats *sh8601_last_frame(void);
  */
 void sh8601_set_dma(int on);
 
+/*
+ * Enable/disable render-DMA overlap. Exists to VERIFY the overlap claim:
+ * the normal telemetry cannot distinguish overlap from no-overlap, because
+ * flush is measured as time spent waiting, which rendering already shortened.
+ * With overlap off, each band's DMA is collected before the next is rendered.
+ */
+void sh8601_set_overlap(int on);
+
 /* Descriptor word 0 after the last DMA row - owner bit tells us whether the
  * engine ever consumed it. */
 uint32_t sh8601_dbg_desc(void);

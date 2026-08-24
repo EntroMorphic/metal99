@@ -20,6 +20,11 @@
 #define SPI2_E_NULL  (-2)
 #define SPI2_E_ALIGN (-3)    /* data not 16-byte aligned (see contract below) */
 #define SPI2_E_HANG  (-4)    /* peripheral did not complete - clock stopped? */
+/* Distinct codes per stage. A single E_HANG told us a transfer failed but not
+ * WHERE, and three rounds were spent fixing the wrong stage. */
+#define SPI2_E_SYNC  (-5)    /* SPI_UPDATE never cleared      */
+#define SPI2_E_USR   (-6)    /* SPI_CMD.USR never cleared     */
+#define SPI2_E_DMA   (-7)    /* GDMA never signalled done     */
 
 /*
  * Set the SPI bus clock. Legitimate configuration, not probing: it changes how

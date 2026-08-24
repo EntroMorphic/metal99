@@ -1,3 +1,4 @@
+#include <stddef.h>
 #include "gdma.h"
 #include "io.h"
 
@@ -40,7 +41,10 @@
 #define SPI_BUF_AFIFO_RST    (1u << 30)
 #define SPI_DMA_AFIFO_RST    (1u << 31)
 
-#define GDMA_SPIN_LIMIT      2000000u
+/* 10x the longest legitimate wait; see the note in spi2.c. */
+#define GDMA_SPIN_LIMIT      200000u
+
+static gdma_desc g_prime;    /* absorbs the swallowed first start; see below */
 
 void gdma_init(void)
 {
@@ -79,10 +83,45 @@ void gdma_init(void)
 
     GDMA_OUT_INT_CLR_CH0 = 0xFFFFFFFFu;
 
-    /* Prime the descriptor FSM. The first START after OUT_RST is swallowed -
-     * the engine stays PARKED and the transfer silently does nothing. Issuing
-     * a STOP here leaves the FSM in a state where the next START takes. */
+    GDMA_OUT_LINK_CH0 = 0u;
+
+    /*
+     * ABSORB THE SWALLOWED FIRST START.
+     *
+     * Characterised, not fully explained: the first gdma_start() after init is
+     * ignored - the engine stays PARKED and the descriptor is never fetched -
+     * while a SECOND start takes, provided the channel is NOT reset in between.
+     * Resetting undoes whatever the first arm primes, which is why an earlier
+     * reset-then-retry fix did not work.
+     *
+     * So spend that first start here on a dummy descriptor whose owner bit is
+     * CPU (0). The engine fetches it, sees it does not own the buffer, and
+     * stops. No SPI transaction is triggered, so nothing reaches the panel and
+     * not a single byte moves on the bus.
+     *
+     * Without this the first real transfer times out both guards before its
+     * retry succeeds - a 293 ms frame at boot.
+     */
+    g_prime.dw0    = 0u;          /* owner = CPU: engine will not transfer */
+    g_prime.buffer = &g_prime;
+    g_prime.next   = NULL;
+    gdma_start(&g_prime);
     GDMA_OUT_LINK_CH0 = OUTLINK_STOP;
+    GDMA_OUT_INT_CLR_CH0 = 0xFFFFFFFFu;
+}
+
+int gdma_restart(const gdma_desc *first)
+{
+    /* Full channel reset then re-arm. Used to recover a transfer that never
+     * began - see spi2_dma_finish(). */
+    GDMA_OUT_CONF0_CH0 = OUT_RST;
+    GDMA_OUT_CONF0_CH0 = 0u;
+    GDMA_OUT_CONF0_CH0 = OUTDSCR_BURST_EN | OUT_DATA_BURST_EN | OUT_EOF_MODE;
+    GDMA_OUT_PERI_SEL_CH0 = PERI_SPI2;
+    GDMA_OUT_INT_CLR_CH0 = 0xFFFFFFFFu;
+    GDMA_OUT_LINK_CH0 = 0u;
+    gdma_start(first);
+    return GDMA_OK;
 }
 
 void gdma_start(const gdma_desc *first)

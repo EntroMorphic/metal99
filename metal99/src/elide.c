@@ -8,7 +8,10 @@
 
 static uint32_t    g_dirty[WORDS];
 static uint32_t    g_frames;
+static uint32_t    g_resync_period = ELIDE_RESYNC_FRAMES;
 static elide_stats g_stats;
+
+void elide_set_resync(uint32_t frames) { g_resync_period = frames; }
 
 void elide_init(void)
 {
@@ -44,13 +47,20 @@ int elide_flush(void (*rowfn)(uint16_t *row, int y))
 
     if (rowfn == NULL) return SPI2_E_NULL;
 
-    /* Periodic forced resync. The model of remote state cannot be verified, so
-     * it is refreshed on a schedule rather than trusted indefinitely. */
-    g_stats.was_resync = 0u;
-    if (++g_frames >= ELIDE_RESYNC_FRAMES) {
-        g_frames = 0u;
-        g_stats.was_resync = 1u;
-        elide_reset();
+    /* Rolling resync: refresh a rotating slice every frame rather than the
+     * whole screen occasionally. The model of remote state still cannot be
+     * verified, so it is still rewritten on a schedule - just without the
+     * 16.6 ms spike that made every resync frame miss its deadline. */
+    g_stats.resync_rows = 0u;
+    if (g_resync_period != 0u) {
+        int r0 = (int)((g_frames % g_resync_period) * ELIDE_RESYNC_ROWS);
+        int r1 = r0 + (int)ELIDE_RESYNC_ROWS - 1;
+        if (r0 < ROWS) {
+            if (r1 > (ROWS - 1)) r1 = ROWS - 1;
+            elide_mark(r0, r1);
+            g_stats.resync_rows = (uint32_t)(r1 - r0 + 1);
+        }
+        g_frames++;
     }
 
     g_stats.rows_sent = 0u;

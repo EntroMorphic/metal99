@@ -46,6 +46,10 @@ int  gdma_wait(void);
  * internal SRAM. Checked rather than assumed. */
 int  gdma_desc_addr_ok(const void *p);
 
+/* Reset the channel and re-arm a chain. Recovery for a transfer that never
+ * started - the engine can swallow the first START after init. */
+int  gdma_restart(const gdma_desc *first);
+
 /* Raw interrupt status last observed by gdma_wait() - for diagnosis. */
 uint32_t gdma_last_status(void);
 
