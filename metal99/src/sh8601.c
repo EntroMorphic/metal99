@@ -1,13 +1,14 @@
 #include "sh8601.h"
 #include "spi2.h"
 #include "io.h"
+#include "vec.h"
 #include <stddef.h>
 
 #define OPCODE_PARAM 0x02u
 
 int sh8601_cmd(uint8_t cmd, const uint8_t *params, uint32_t n)
 {
-    uint8_t word[4];
+    uint8_t VEC_ALIGN word[16];   /* padded: FIFO load is vectorised */
     int rc;
 
     word[0] = OPCODE_PARAM;
@@ -32,7 +33,9 @@ int sh8601_cmd(uint8_t cmd, const uint8_t *params, uint32_t n)
 
 int sh8601_brightness(uint8_t level)
 {
-    return sh8601_cmd(0x51u, &level, 1u);
+    uint8_t VEC_ALIGN p[16];
+    p[0] = level;
+    return sh8601_cmd(0x51u, p, 1u);
 }
 
 #define OPCODE_PIXEL 0x32u
@@ -45,7 +48,7 @@ uint16_t sh8601_rgb565(uint8_t r, uint8_t g, uint8_t b)
 
 int sh8601_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
 {
-    uint8_t p[4];
+    uint8_t VEC_ALIGN p[16];
     int rc;
 
     p[0] = (uint8_t)(x0 >> 8); p[1] = (uint8_t)(x0 & 0xFFu);
@@ -76,7 +79,7 @@ static int stream(const uint8_t *d, uint32_t n, int final_row)
 int sh8601_write_frame(void (*rowfn)(uint16_t *row, int y))
 {
     static uint16_t row[SH8601_WIDTH];
-    uint8_t word[4];
+    uint8_t VEC_ALIGN word[16];
     int rc, y;
 
     if (rowfn == NULL) return SPI2_E_NULL;
@@ -123,16 +126,16 @@ int sh8601_init(void)
      * COLMOD is the pixel-format register. Without it the panel has no idea
      * the stream is RGB565, so pixels land as noise or nothing at all.
      */
-    static const uint8_t p36[1] = { 0x00u };   /* MADCTL: RGB element order  */
-    static const uint8_t p3A[1] = { 0x55u };   /* COLMOD: 16bpp RGB565       */
+    static const uint8_t VEC_ALIGN p36[16] = { 0x00u };   /* MADCTL: RGB element order  */
+    static const uint8_t VEC_ALIGN p3A[16] = { 0x55u };   /* COLMOD: 16bpp RGB565       */
 
     /* Transcribed from Waveshare BSP 2.0.0 (the SH8601 revision - BSP >= 2.0.3
      * is the CO5300 board and its sequence would be wrong here). */
-    static const uint8_t p44[2] = { 0x01u, 0xD1u };   /* tear scanline      */
-    static const uint8_t p35[1] = { 0x00u };          /* tearing effect on  */
-    static const uint8_t p53[1] = { 0x20u };          /* WRCTRLD, BCTRL on  */
-    static const uint8_t p51_0[1] = { 0x00u };
-    static const uint8_t p51_f[1] = { 0xFFu };
+    static const uint8_t VEC_ALIGN p44[16] = { 0x01u, 0xD1u };   /* tear scanline      */
+    static const uint8_t VEC_ALIGN p35[16] = { 0x00u };          /* tearing effect on  */
+    static const uint8_t VEC_ALIGN p53[16] = { 0x20u };          /* WRCTRLD, BCTRL on  */
+    static const uint8_t VEC_ALIGN p51_0[16] = { 0x00u };
+    static const uint8_t VEC_ALIGN p51_f[16] = { 0xFFu };
     int rc;
 
     /* Software reset first - no reset pin on this board. */

@@ -713,15 +713,52 @@ panel renders from vectorised fills.
 | Row fills | vectorised (`vec_fill16`) |
 | `.bss` zeroing | **vectorised** - linker aligns/pads `.bss` to whole 128-bit vectors so `vec_zero` covers it with no scalar tail |
 | Vertical gradient | vectorised - one colour per ROW (448/frame), then a broadcast fill |
-| **`spi2_xfer` W-packing** | **scalar per-byte, 5,152x/frame** |
+| `spi2_xfer` FIFO load | **vectorised** - see 6.8a |
 | `sh8601_rgb565` | single value, not bulk |
 | `con_dec` | console formatting |
 | Loop counters, addresses, branches | inherent control flow |
 
-The W-packing loop is the hottest scalar code we have, but its destination is
-**MMIO peripheral registers** (`SPI_W0..W15`), and 128-bit stores to peripheral
-address space cannot be assumed to work. **GDMA deletes the loop entirely**,
-which is the correct fix rather than vectorising MMIO.
+### 6.8a Vectorised MMIO - both blockers dissolved
+
+I had written off vectorising the FIFO load. Both reasons turned out to be
+wrong, and testing them cost under an hour.
+
+**Blocker 1 - alignment. Real, and sidestepped.**
+`SPI_W0` is at `0x60024098`: `% 4 = 0`, `% 8 = 0`, but **`% 16 = 8`**. So
+`EE.VST.128.IP`, which requires 16-byte alignment, genuinely cannot target it.
+But `EE.VST.L.64.IP` / `EE.VST.H.64.IP` need only **8-byte** alignment, which
+`W0` satisfies exactly. One 128-bit register goes out as two 64-bit stores.
+
+**Blocker 2 - can vector stores reach peripheral space? YES.**
+Assumed no; never checked. Tested directly by storing a known pattern to
+`SPI_W0..W3` and reading it back scalar:
+
+```
+W0 = 0x11223344   W1 = 0x55667788
+W2 = 0x99AABBCC   W3 = 0xDDEEFF00
+PASS  128b via 2x64b store reached MMIO
+```
+
+**Result: 3.8x on a full frame, before GDMA.**
+
+| Frame | Scalar packing | Vectorised | Speedup |
+|---|---|---|---|
+| Colour bars | 311 ms | **82 ms** | **3.8x** |
+| Gradient | 599 ms | **83 ms** | **7.2x** |
+| fps | 3.2 | **12.2** | |
+
+The gradient is now the same cost as flat bars - per-pixel work has effectively
+vanished. Bus utilisation rose from 5.3% to 20%.
+
+**Alignment contract.** `spi2_xfer` now REJECTS misaligned input with
+`SPI2_E_ALIGN` rather than silently falling back to a scalar path - a silent
+fallback is exactly the failure mode this project keeps getting bitten by.
+Command words and parameter blocks are `VEC_ALIGN` and padded to 16 bytes; the
+FIFO load rounds up to whole vectors and `MS_DLEN` bounds what is actually
+transmitted, so the padding is never sent.
+
+**GDMA still matters** - 20% bus utilisation means 80% is still overhead - but
+it is now an optimisation rather than a rescue.
 
 ## 7. Graphics messaging layer
 

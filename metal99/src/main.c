@@ -79,14 +79,49 @@ void app_entry(void)
         con_puts(" cycles/row\r\n");
     }
 
+    /* ---- EXPERIMENT: can the vector unit store to MMIO peripheral space? ----
+     * SPI_W0 is at 0x60024098: 8-byte aligned but NOT 16, so EE.VST.128 cannot
+     * target it. EE.VST.L/H.64 need only 8-byte alignment, so use two of them.
+     * Unknown whether the vector store unit can address peripheral space at
+     * all - if it faults we never reach the readback. */
     spi2_init();
+    {
+        static uint32_t VEC_ALIGN pattern[4] = {
+            0x11223344u, 0x55667788u, 0x99AABBCCu, 0xDDEEFF00u
+        };
+        volatile uint32_t *w = (volatile uint32_t *)0x60024098u;
+        uint32_t got[4];
+
+        w[0] = 0u; w[1] = 0u; w[2] = 0u; w[3] = 0u;   /* baseline */
+        con_puts("  MMIO vector store: attempting...\r\n");
+
+        __asm__ __volatile__ (
+            "ee.vld.128.ip   q3, %0, 0   \n"
+            : : "a"(pattern));
+        __asm__ __volatile__ (
+            "ee.vst.l.64.ip  q3, %0, 8   \n"
+            "ee.vst.h.64.ip  q3, %0, 8   \n"
+            : "+a"(w) : : "memory");
+
+        w = (volatile uint32_t *)0x60024098u;
+        got[0] = w[0]; got[1] = w[1]; got[2] = w[2]; got[3] = w[3];
+        show("W0", got[0]); show("W1", got[1]);
+        show("W2", got[2]); show("W3", got[3]);
+        check("128b via 2x64b store reached MMIO",
+              got[0] == 0x11223344u && got[1] == 0x55667788u &&
+              got[2] == 0x99AABBCCu && got[3] == 0xDDEEFF00u);
+    }
+
     rc = sh8601_init();
     con_puts("  sh8601_init rc="); con_dec((int32_t)rc); con_puts("\r\n");
 
     for (i = 0; ; i++) {
+        uint32_t t0 = cpu_cycles();
         rc = sh8601_write_frame(((i & 1) == 0) ? colorbars : gradient);
-        con_puts(((i & 1) == 0) ? "  BARS     rc=" : "  GRADIENT rc=");
-        con_dec((int32_t)rc); con_puts("\r\n");
-        delay_ms(3000u);
+        con_puts(((i & 1) == 0) ? "  BARS     " : "  GRADIENT ");
+        con_puts("rc="); con_dec((int32_t)rc);
+        con_puts("  frame="); con_dec((int32_t)((cpu_cycles() - t0) / (CPU_HZ / 1000u)));
+        con_puts(" ms\r\n");
+        delay_ms(2000u);
     }
 }

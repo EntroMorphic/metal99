@@ -1,5 +1,6 @@
 #include "spi2.h"
 #include "io.h"
+#include "vec.h"
 #include <stddef.h>
 
 /* ---------------------------------------------------------------- bases */
@@ -156,26 +157,33 @@ void spi2_init(void)
 /* ------------------------------------------------------------- transfer */
 int spi2_xfer(const uint8_t *data, uint32_t len, int quad, int keep_cs)
 {
-    uint32_t words, i;
 
     /* Report rather than silently dropping: a caller that mis-chunks would
      * otherwise get a partially-blank panel and no clue why. */
-    if (data == NULL)                    return SPI2_E_NULL;
+    if (data == NULL)                       return SPI2_E_NULL;
     if (len == 0u || len > SPI2_FIFO_BYTES) return SPI2_E_LEN;
+    if (((uintptr_t)data & 15u) != 0u)      return SPI2_E_ALIGN;
 
-    /* Pack bytes into W0..W15. The peripheral shifts out byte 0 of each word
-     * first, and Xtensa is little-endian, so plain byte-order packing puts
-     * bytes on the wire in array order. Only the words we actually send are
-     * written - peripheral writes are slow and this is the hot path. */
-    words = (len + 3u) / 4u;
-    for (i = 0u; i < words; i++) {
-        uint32_t w = 0u;
-        uint32_t b;
-        for (b = 0u; b < 4u; b++) {
-            uint32_t idx = i * 4u + b;
-            if (idx < len) w |= ((uint32_t)data[idx]) << (b * 8u);
-        }
-        SPI_W(i) = w;
+    /* Load the FIFO with VECTOR stores - no scalar byte packing.
+     *
+     * SPI_W0 is at 0x60024098: 8-byte aligned but NOT 16, so EE.VST.128 cannot
+     * target it. EE.VST.L/H.64 need only 8-byte alignment, so one 128-bit
+     * register goes out as two 64-bit stores. Verified on hardware that vector
+     * stores do reach peripheral address space.
+     *
+     * Rounds up to whole vectors; MS_DLEN below bounds what is actually sent. */
+    {
+        volatile uint32_t *w = (volatile uint32_t *)(uintptr_t)(SPI2_BASE + 0x98u);
+        const uint8_t *src = data;
+        uint32_t vectors = (len + (uint32_t)VEC_BYTES - 1u) / (uint32_t)VEC_BYTES;
+        __asm__ __volatile__ (
+            "1:                            \n"
+            "  ee.vld.128.ip  q3, %1, 16   \n"
+            "  ee.vst.l.64.ip q3, %0, 8    \n"
+            "  ee.vst.h.64.ip q3, %0, 8    \n"
+            "  addi.n         %2, %2, -1   \n"
+            "  bnez           %2, 1b       \n"
+            : "+a"(w), "+a"(src), "+a"(vectors) : : "memory");
     }
 
     /* CK_OUT_EDGE stays 0 and CK_IDLE_EDGE stays 0: that pair IS SPI mode 0.

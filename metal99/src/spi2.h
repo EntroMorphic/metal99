@@ -18,12 +18,22 @@
 #define SPI2_OK        0
 #define SPI2_E_LEN   (-1)    /* len 0, or > SPI2_FIFO_BYTES */
 #define SPI2_E_NULL  (-2)
+#define SPI2_E_ALIGN (-3)    /* data not 16-byte aligned (see contract below) */
 
 /* Clock-gate, reset, route pins through the GPIO matrix, configure mode 0. */
 void spi2_init(void);
 
 /*
  * One FIFO transaction. len must be 1..SPI2_FIFO_BYTES.
+ *
+ * ALIGNMENT CONTRACT: `data` MUST be 16-byte aligned (use VEC_ALIGN). The FIFO
+ * is loaded with vector stores, so a misaligned pointer is rejected with
+ * SPI2_E_ALIGN rather than silently falling back to a scalar path.
+ *
+ * Up to 15 bytes past `len` may be READ from the source and written into FIFO
+ * registers beyond the transmitted length. Those bytes are never sent
+ * (MS_DLEN bounds the transfer), but the source buffer must be padded to a
+ * 16-byte multiple so the over-read stays inside your own allocation.
  *   quad    : 0 = data on 1 line, 1 = data on 4 lines (QIO)
  *   keep_cs : 1 = leave CS asserted after this transaction
  *
