@@ -510,7 +510,28 @@ not needed.
 forced by the 192 K DRAM region and happens to be the architecture we wanted
 anyway.
 
-#### Measured, and what it costs
+#### ISA probe results
+
+Probed by assembling each mnemonic. Available and useful:
+
+| Category | Instructions |
+|---|---|
+| 16-bit lane arithmetic | `ee.vadds.s16` `ee.vsubs.s16` `ee.vmul.s16` `ee.vmul.u16` |
+| Logical | `ee.andq` `ee.orq` `ee.xorq` |
+| Broadcast / lane insert | `ee.vldbc.16` `ee.vldbc.32` `ee.movi.32.q` |
+| Byte reorder | `ee.vzip.8` `ee.vunzip.8` `ee.vzip.16` |
+| Min/max, 32-bit shift | `ee.vmin.s16` `ee.vmax.s16` `ee.vsl.32` `ee.vsr.32` |
+
+**Not available:** `ee.vsl.16` / `ee.vsr.16` (no 16-bit lane shift), `ee.shfqi`,
+`ee.slci.2q`, `ee.srci.2q`.
+
+The missing 16-bit shift matters less than it looks. In RGB565 **wire format**
+(byte-swapped) the memory word is `(lo << 8) | hi` where `hi = RRRRRGGG` and
+`lo = GGGBBBBB`. So **red sits at bits 3-7 and blue at bits 8-12 of the memory
+word** - both contiguous. Ramping red or blue is plain vector addition with no
+byte swap required. Only green straddles the byte boundary.
+
+### Measured, and what it costs
 
 | Frame | Time |
 |---|---|
@@ -658,6 +679,27 @@ Two blockers had to be cleared before this was even possible:
 Use `VEC_ALIGN`. Conveniently **368 px = 736 B = exactly 46 vectors**, so a full
 row divides evenly and needs no scalar tail handling.
 
+### ISA probe results
+
+Probed by assembling each mnemonic. Available and useful:
+
+| Category | Instructions |
+|---|---|
+| 16-bit lane arithmetic | `ee.vadds.s16` `ee.vsubs.s16` `ee.vmul.s16` `ee.vmul.u16` |
+| Logical | `ee.andq` `ee.orq` `ee.xorq` |
+| Broadcast / lane insert | `ee.vldbc.16` `ee.vldbc.32` `ee.movi.32.q` |
+| Byte reorder | `ee.vzip.8` `ee.vunzip.8` `ee.vzip.16` |
+| Min/max, 32-bit shift | `ee.vmin.s16` `ee.vmax.s16` `ee.vsl.32` `ee.vsr.32` |
+
+**Not available:** `ee.vsl.16` / `ee.vsr.16` (no 16-bit lane shift), `ee.shfqi`,
+`ee.slci.2q`, `ee.srci.2q`.
+
+The missing 16-bit shift matters less than it looks. In RGB565 **wire format**
+(byte-swapped) the memory word is `(lo << 8) | hi` where `hi = RRRRRGGG` and
+`lo = GGGBBBBB`. So **red sits at bits 3-7 and blue at bits 8-12 of the memory
+word** - both contiguous. Ramping red or blue is plain vector addition with no
+byte swap required. Only green straddles the byte boundary.
+
 ### Measured
 
 Row fill of 368 px: **364 cycles = 0.99 cycles/pixel** (scalar was ~3-4).
@@ -668,8 +710,9 @@ panel renders from vectorised fills.
 
 | Site | Status |
 |---|---|
-| Row fills | vectorised |
-| `.bss` zeroing | scalar word loop - to convert |
+| Row fills | vectorised (`vec_fill16`) |
+| `.bss` zeroing | **vectorised** - linker aligns/pads `.bss` to whole 128-bit vectors so `vec_zero` covers it with no scalar tail |
+| Vertical gradient | vectorised - one colour per ROW (448/frame), then a broadcast fill |
 | **`spi2_xfer` W-packing** | **scalar per-byte, 5,152x/frame** |
 | `sh8601_rgb565` | single value, not bulk |
 | `con_dec` | console formatting |

@@ -35,10 +35,13 @@ static void colorbars(uint16_t *row, int y)
     vec_fill16(row, bars[(y * 5) / SH8601_HEIGHT], ROW_VECTORS);
 }
 
-static void magenta(uint16_t *row, int y)
+/* Vertical gradient. One colour computed per ROW (448 values per frame), then
+ * the row itself is a single vectorised broadcast fill - no per-pixel scalar. */
+static void gradient(uint16_t *row, int y)
 {
-    (void)y;
-    vec_fill16(row, sh8601_rgb565(255, 0, 255), ROW_VECTORS);
+    uint8_t v = (uint8_t)((y * 255) / (SH8601_HEIGHT - 1));
+    vec_fill16(row, sh8601_rgb565(v, (uint8_t)(64u + v / 4u),
+                                  (uint8_t)(255u - v)), ROW_VECTORS);
 }
 
 void app_entry(void)
@@ -81,8 +84,8 @@ void app_entry(void)
     con_puts("  sh8601_init rc="); con_dec((int32_t)rc); con_puts("\r\n");
 
     for (i = 0; ; i++) {
-        rc = sh8601_write_frame(((i & 1) == 0) ? colorbars : magenta);
-        con_puts(((i & 1) == 0) ? "  BARS    rc=" : "  MAGENTA rc=");
+        rc = sh8601_write_frame(((i & 1) == 0) ? colorbars : gradient);
+        con_puts(((i & 1) == 0) ? "  BARS     rc=" : "  GRADIENT rc=");
         con_dec((int32_t)rc); con_puts("\r\n");
         delay_ms(3000u);
     }

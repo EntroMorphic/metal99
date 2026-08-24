@@ -25,9 +25,12 @@ SECTIONS
   .rodata : ALIGN(4) { *(.rodata .rodata.*) } > dram
   .data   : ALIGN(4) { *(.data .data.*) }     > dram
 
-  .bss : ALIGN(4) {
+  /* 16-byte aligned, and padded to a whole number of 128-bit vectors, so
+   * vec_zero() covers it exactly with no scalar tail. */
+  .bss : ALIGN(16) {
     _bss_start = ABSOLUTE(.);
     *(.bss .bss.* COMMON)
+    . = ALIGN(16);
     _bss_end = ABSOLUTE(.);
   } > dram
 
