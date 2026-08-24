@@ -409,6 +409,52 @@ PASS  NULL    -> E_NULL
 64Bq=1124 64Bs=1316 4B=206 -> 40000 kHz  PASS 40MHz
 ```
 
+### 6.6b First contact - VERIFIED 2026-08-24
+
+**Result: the panel responds to commands composed from raw registers.**
+
+Method mattered more than the code. The panel keeps power and state across CPU
+resets and has no reset pin, so after flashing metal99 it was still displaying
+the previous firmware's last frame - already initialised, awake, display on.
+That is a diagnostic asset, not a nuisance:
+
+1. **Do not run the init sequence.** A known-good display is the best reference
+   available; `0x11` sleep-out would have destroyed it before anything was
+   proven.
+2. **Send no pixels.** If colour bars had failed, a framing bug, a CS-hold bug
+   and a data-path bug would all look identical (black screen, no error).
+3. **Use a reversible knob.** `0x51` (brightness) needs zero pixel data, is
+   guaranteed supported, and alternating `0x00`/`0xFF` on a 1.5 s cycle turns a
+   static image into an unmistakable signal.
+
+Observed: the frozen image went fully dark, then came back, repeatedly.
+
+Proven by that one test, without sending a single pixel:
+
+| Proven | |
+|---|---|
+| Command framing `{0x02, 0x00, cmd, 0x00}` on one line | correct |
+| CS held across command -> parameter | works |
+| All six pins routed through the GPIO matrix | correct |
+| 40 MHz, SPI mode 0 | accepted by the panel |
+| Parameter write path, both directions | works |
+
+Still unproven, and deliberately so: the **pixel path** (opcode `0x32`, quad
+mode, `0x2C`), **CS held across ~5,152 FIFO chunks**, and **our own init
+sequence** - we are currently riding on the previous firmware's initialisation.
+
+**Revised milestone order.** Test one new thing at a time, keeping the
+pre-initialised panel as the reference for as long as possible:
+
+| Step | Tests | Status |
+|---|---|---|
+| 2b-i | command path via brightness | **DONE** |
+| 2b-ii | pixel path, reusing the existing init and address window | next |
+| 2b-iii | our own init sequence (destructive - do it last) | after |
+
+This inverts the original plan, which ran init first. Running our own init last
+means that if the panel ever goes dark we know exactly which change did it.
+
 ### 6.7 Transfer path: CPU FIFO first
 
 Milestone 2 uses the **64-byte CPU FIFO** (`SPI_W0..W15`), not DMA.
