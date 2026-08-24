@@ -6,6 +6,7 @@
 #include "gdma.h"
 #include "sh8601.h"
 #include "elide.h"
+#include "gfx.h"
 
 #define ROW_VECTORS (SH8601_WIDTH * 2 / VEC_BYTES)
 
@@ -226,6 +227,55 @@ void app_entry(void)
 
         sh8601_set_dma(0);
         con_puts(fails ? "SELF-TEST FAILED\r\n" : "SELF-TEST PASSED\r\n");
+    }
+
+    /* ---------------- gfx: retained-mode messaging layer ---------------- */
+    gfx_init();
+    con_puts("\r\ngfx layer\r\n");
+
+    {
+        uint32_t ch;
+        /* Background, once. */
+        ch = gfx_solid(0u, SH8601_HEIGHT - 1u, sh8601_rgb565(0, 20, 60));
+        con_puts("  paint background : "); con_dec((int32_t)ch); con_puts(" rows changed\r\n");
+        (void)gfx_present();
+
+        /* Same colour again - should be FULLY elided, zero rows. */
+        ch = gfx_solid(0u, SH8601_HEIGHT - 1u, sh8601_rgb565(0, 20, 60));
+        con_puts("  repaint same     : "); con_dec((int32_t)ch);
+        con_puts(" rows changed (0 = elided)\r\n");
+        (void)gfx_present();
+        con_puts("  -> transmitted   : "); con_dec((int32_t)gfx_last()->rows_sent);
+        con_puts(" rows\r\n");
+    }
+
+    /* Animate a bar by describing WHERE IT IS, not what changed. The layer
+     * works out the difference, so there is no marking to get wrong. */
+    {
+        int prev = -1;
+        con_puts("  animating - layer derives dirty rows itself\r\n");
+        for (i = 0; i < 240; i++) {
+            int by = (i * 4) % (SH8601_HEIGHT - 96);
+            uint32_t changed;
+
+            if (prev >= 0) (void)gfx_solid((uint16_t)prev, (uint16_t)(prev + 95),
+                                           sh8601_rgb565(0, 20, 60));
+            changed = gfx_solid((uint16_t)by, (uint16_t)(by + 95),
+                                sh8601_rgb565(255, 70, 0));
+            prev = by;
+
+            rc = gfx_present();
+            if (rc != SPI2_OK) { con_puts("  gfx_present FAILED\r\n"); break; }
+            if ((i % 60) == 0) {
+                const gfx_stats *g = gfx_last();
+                con_puts("   changed="); con_dec((int32_t)changed);
+                con_puts(" sent="); con_dec((int32_t)g->rows_sent);
+                con_puts(" spans="); con_dec((int32_t)g->spans);
+                con_puts(" "); put_ms(g->cycles); con_puts("\r\n");
+            }
+            delay_ms(16u);
+        }
+        con_puts("  gfx demo done\r\n");
     }
 
     con_puts("mode | rows spans | update | eff fps | headroom vs 16.67ms\r\n");
