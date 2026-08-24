@@ -455,6 +455,53 @@ pre-initialised panel as the reference for as long as possible:
 This inverts the original plan, which ran init first. Running our own init last
 means that if the panel ever goes dark we know exactly which change did it.
 
+### 6.6c Pixel path - VERIFIED 2026-08-24
+
+**Colour bars and a gradient render correctly on the panel.** Milestone 2 is
+complete: the display is driven end to end from our own registers, in pure ISO
+C99, with no ESP-IDF, no FreeRTOS and no ROM calls.
+
+Proven by this step:
+
+| Proven | |
+|---|---|
+| Pixel framing: opcode `0x32`, command `0x2C` | correct |
+| Four-line (QIO) data phase | correct |
+| **CS held across 5,152 FIFO chunks for 311 ms** | works |
+| Address window `0x2A` / `0x2B` | correct |
+| RGB565 **big-endian** byte order | correct |
+| Redraw (two different frames alternating) | works |
+
+The CS-hold concern is resolved empirically: holding CS asserted across
+thousands of small transactions is fine, so `0x3C` write-memory-continue is
+not needed.
+
+**No framebuffer is required.** Frames stream row by row through a single
+736-byte row buffer, so a 329,728-byte frame never exists in RAM. This was
+forced by the 192 K DRAM region and happens to be the architecture we wanted
+anyway.
+
+#### Measured, and what it costs
+
+| Frame | Time |
+|---|---|
+| Colour bars (trivial fill) | **311 ms** |
+| Gradient (per-pixel arithmetic) | **599 ms** |
+
+Two independent facts fall out:
+
+1. **The FIFO path is overhead-bound, not bus-bound.** 329,728 B in 311 ms is
+   1.06 MB/s. Each 64-byte chunk costs ~1124 cycles (56.2 us at 20 MHz) but
+   only 128 SPI clocks (3.2 us) of that is time on the wire - about **6 % bus
+   utilisation**. The other 94 % is per-transaction setup. This is precisely
+   what GDMA exists to remove, and it bounds the win at roughly 17x.
+2. **The CPU is starved.** Identical transfers, yet the gradient costs 288 ms
+   more purely in per-pixel arithmetic. At 240 MHz that would be ~24 ms. This
+   is the §4.3 warning showing up in a real measurement.
+
+Together they say Milestone 3 (GDMA) and PLL enablement are the two things
+standing between here and a usable frame rate, and they are independent.
+
 ### 6.7 Transfer path: CPU FIFO first
 
 Milestone 2 uses the **64-byte CPU FIFO** (`SPI_W0..W15`), not DMA.
@@ -600,7 +647,9 @@ Each milestone has a criterion that fails loudly rather than silently.
 |---|---|---|---|
 | 1 | Boot, console, watchdogs | Stable heartbeat over USB-Serial-JTAG, no reset loop | **DONE** — 960 B image |
 | 2a | SPI2 from registers | 40 MHz bus, quad mode confirmed by timing | **DONE** — 40000 kHz, PASS |
-| 2b | SH8601 from registers | Color bars R/G/B/white/black visible on panel | specified |
+| 2b-i | Command path (brightness) | Frozen image pulses under command | **DONE** |
+| 2b-ii | Pixel path | Colour bars + gradient render correctly | **DONE** |
+| 2b-iii | Our own init sequence | Panel comes up from cold without prior init | next |
 | 3 | GDMA transfer | Same bars, full frame under 25 ms | specified |
 | 4 | Renderer integration | `render_c99.c` plasma at >= 25 fps | specified |
 | 5 | Messaging layer | Opcode stream drives the panel; `OP_PRESENT` produces a visible frame | specified |

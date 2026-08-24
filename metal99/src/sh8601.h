@@ -22,4 +22,19 @@ int sh8601_cmd(uint8_t cmd, const uint8_t *params, uint32_t n);
 /* 0x51 - display brightness, 0..255. */
 int sh8601_brightness(uint8_t level);
 
+/* 0x2A / 0x2B - address window. Inclusive coordinates. */
+int sh8601_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1);
+
+/* Pack to the panel's wire format: RGB565, big-endian. */
+uint16_t sh8601_rgb565(uint8_t r, uint8_t g, uint8_t b);
+
+/*
+ * Stream one full frame. rowfn fills a SH8601_WIDTH-pixel row for each y.
+ *
+ * Owns the entire CS sequence: the 0x32/0x2C command word, every 64-byte
+ * chunk with CS held, and the release on the final chunk. Callers never
+ * compose CS, and a full framebuffer is never required - only one row.
+ */
+int sh8601_write_frame(void (*rowfn)(uint16_t *row, int y));
+
 #endif /* SH8601_PANEL_H */
