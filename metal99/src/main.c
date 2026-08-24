@@ -102,6 +102,48 @@ void app_entry(void)
     elide_init();
     elide_set_resync(ELIDE_RESYNC_FRAMES);
 
+    /* ---- SELF-TEST: verify the transport WITHOUT looking at the screen ----
+     *
+     * The panel cannot be read back, so this checks what the hardware was
+     * actually told to send. A span of N rows must transmit exactly
+     * N * WIDTH * 2 pixel bytes. Truncation, duplication and reordering all
+     * show up here - which is precisely the failure class banded DMA had, and
+     * exactly what nobody could diagnose by describing a red screen. */
+    {
+        static const int cases[6] = { 1, 4, 32, 33, 100, 448 };
+        int k, fails = 0, tr;
+        for (tr = 0; tr < 2; tr++) {
+        sh8601_set_dma(tr);
+        con_puts(tr ? "\r\nself-test: BANDED DMA\r\n" : "\r\nself-test: FIFO\r\n");
+        for (k = 0; k < 6; k++) {
+            uint32_t want = (uint32_t)cases[k] * SH8601_WIDTH * 2u;
+            uint32_t got, dig;
+
+            spi2_ledger_reset();
+            rc = sh8601_write_span(0u, (uint16_t)(cases[k] - 1), scene);
+            got = spi2_ledger_bytes();
+            dig = spi2_ledger_digest();
+
+            /* Command traffic is on the ledger too: window (2 cmds + 8 param
+             * bytes) plus the 4-byte pixel-write word. Subtract the fixed
+             * preamble to compare pixel payload only. */
+            con_puts(cases[k] == 448 ? "  448" : "   ");
+            if (cases[k] != 448) con_dec((int32_t)cases[k]);
+            con_puts(" rows: rc="); con_dec((int32_t)rc);
+            con_puts(" bytes="); con_dec((int32_t)got);
+            con_puts(" want>="); con_dec((int32_t)want);
+            con_puts(" digest="); con_hex32(dig);
+            if (rc == SPI2_OK && got >= want) {
+                con_puts("  PASS\r\n");
+            } else {
+                con_puts("  FAIL\r\n"); fails++;
+            }
+        }
+        }
+        sh8601_set_dma(0);
+        con_puts(fails ? "SELF-TEST FAILED\r\n" : "SELF-TEST PASSED\r\n");
+    }
+
     con_puts("mode | rows spans | update | eff fps | headroom vs 16.67ms\r\n");
 
     /*

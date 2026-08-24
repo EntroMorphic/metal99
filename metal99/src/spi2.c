@@ -67,6 +67,30 @@
 #define IOMUX_FUN_DRV_S    10
 #define IOMUX_FUN_IE       (1u << 9)
 
+
+/* ---- transmit ledger: on-device verification, no human required ---- */
+static uint32_t g_led_bytes;
+static uint32_t g_led_digest;
+
+void     spi2_ledger_reset(void)  { g_led_bytes = 0u; g_led_digest = 0u; }
+uint32_t spi2_ledger_bytes(void)  { return g_led_bytes; }
+uint32_t spi2_ledger_digest(void) { return g_led_digest; }
+
+/* Order-sensitive and O(1) per transfer, not per byte. Folds the length, the
+ * first and last bytes of the payload, and the running total - so a duplicated
+ * band changes both the count and the fold and cannot cancel out. */
+static void ledger_add(const uint8_t *d, uint32_t len)
+{
+    uint32_t s = g_led_digest;
+    s = (s * 1664525u) + 1013904223u + len;
+    if (len >= 2u) {
+        s ^= (uint32_t)d[0] | ((uint32_t)d[len - 1u] << 16);
+    }
+    s ^= g_led_bytes;
+    g_led_digest = s;
+    g_led_bytes += len;
+}
+
 /* -------------------------------------------------------------- pin map */
 /* Board wires CLK/CS opposite to the IO_MUX defaults for these pins, so every
  * signal must go through the GPIO matrix. */
@@ -221,6 +245,7 @@ int spi2_xfer(const uint8_t *data, uint32_t len, int quad, int keep_cs)
             if (++guard > SPI2_SPIN_LIMIT) return SPI2_E_HANG;
         }
     }
+    ledger_add(data, len);
     return SPI2_OK;
 }
 
@@ -240,8 +265,11 @@ int spi2_write(const uint8_t *data, uint32_t len, int quad)
     return SPI2_OK;
 }
 
-/* Chain currently armed, so a failed transfer can be re-armed. */
+/* Chain currently armed, plus its length, so the ledger can record what the
+ * DMA path actually shipped. A duplicated band shows up as a doubled count. */
 static const gdma_desc *g_inflight;
+static uint32_t         g_inflight_len;
+static const uint8_t   *g_inflight_buf;
 
 int spi2_dma_start(const struct gdma_desc *chain, uint32_t len, int quad, int keep_cs)
 {
@@ -263,7 +291,9 @@ int spi2_dma_start(const struct gdma_desc *chain, uint32_t len, int quad, int ke
     /* ORDER: DMA link first, then apply config, then trigger. Applying config
      * before starting the link left the engine parked on the first transfer -
      * see docs/DESIGN.md 6.6i. */
-    g_inflight = (const gdma_desc *)chain;
+    g_inflight     = (const gdma_desc *)chain;
+    g_inflight_len = len;
+    g_inflight_buf = (const uint8_t *)((const gdma_desc *)chain)->buffer;
     gdma_start((const gdma_desc *)chain);
     if (spi2_sync() != SPI2_OK) { SPI_DMA_CONF = 0u; return SPI2_E_SYNC; }
     SPI_CMD = CMD_USR;
@@ -297,6 +327,7 @@ int spi2_dma_finish(void)
         SPI_DMA_CONF = 0u;
         return SPI2_E_DMA;
     }
+    ledger_add(g_inflight_buf, g_inflight_len);
     SPI_DMA_CONF = 0u;
     return SPI2_OK;
 }

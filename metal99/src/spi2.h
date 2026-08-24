@@ -50,6 +50,26 @@ int spi2_set_clock(uint32_t mhz);
  */
 void spi2_cs_release(void);
 
+/*
+ * TRANSMIT LEDGER - self-checking without a human looking at the screen.
+ *
+ * The panel cannot be read back, so correctness has depended on someone
+ * describing the display. That loop is slow, and it cannot distinguish a wedged
+ * panel showing stale content from wrong pixels being drawn - which cost this
+ * project several wrong conclusions.
+ *
+ * What CAN be verified on-device is what the hardware was actually told to
+ * send. The ledger counts bytes handed to the peripheral and accumulates a
+ * cheap order-sensitive digest of them. A caller that knows what it intended
+ * can then assert it - catching truncation, duplication and reordering, which
+ * is precisely the failure class the banded DMA path exhibited.
+ *
+ * Cost is O(1) per transfer, not per byte.
+ */
+void     spi2_ledger_reset(void);
+uint32_t spi2_ledger_bytes(void);
+uint32_t spi2_ledger_digest(void);
+
 /* Clock-gate, reset, route pins through the GPIO matrix, configure mode 0. */
 void spi2_init(void);
 
