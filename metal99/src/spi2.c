@@ -238,54 +238,48 @@ int spi2_write(const uint8_t *data, uint32_t len, int quad)
     return SPI2_OK;
 }
 
-int spi2_xfer_dma(const struct gdma_desc *chain, uint32_t len, int quad, int keep_cs)
+int spi2_dma_start(const struct gdma_desc *chain, uint32_t len, int quad, int keep_cs)
 {
     if (chain == NULL) return SPI2_E_NULL;
     if (len == 0u)     return SPI2_E_LEN;
-
     if (!gdma_desc_addr_ok(chain)) return SPI2_E_ALIGN;
 
-    /* Mirror IDF's spi_hal_hw_prepare_tx() exactly - it does THREE things and
-     * the third is the one that matters:
-     *   1. reset the DMA AFIFO
-     *   2. CLEAR THE LATCHED outfifo-empty ERROR
-     *   3. enable DMA TX
-     *
-     * Without (2) the very first transfer never happened: a latched
-     * outfifo-empty error blocks the SPI->GDMA request handshake, so the engine
-     * stayed PARKED with the descriptor's owner bit still set, while SPI
-     * completed anyway and shipped stale AFIFO contents. One garbage frame,
-     * no error reported. Diagnosed by dumping link/conf0/descriptor state
-     * rather than guessing - three guesses before this all missed. */
+    /* Mirror IDF's spi_hal_hw_prepare_tx(): AFIFO reset, clear the latched
+     * outfifo-empty error, enable DMA TX. */
     SPI_DMA_CONF = SPI_DMA_TX_ENA_BIT | SPI_BUF_AFIFO_RST_BIT | SPI_DMA_AFIFO_RST_BIT;
     SPI_DMA_CONF = SPI_DMA_TX_ENA_BIT;
     SPI_DMA_INT_CLR = SPI_OUTFIFO_EMPTY_ERR_CLR;
+
     SPI_CTRL = CTRL_D_POL | CTRL_Q_POL;
     SPI_MISC = MISC_CS1_DIS | MISC_CS2_DIS | (keep_cs ? MISC_CS_KEEP_ACTIVE : 0u);
     SPI_USER = USER_USR_MOSI | (quad ? USER_FWRITE_QUAD : 0u);
     SPI_MS_DLEN = (len * 8u) - 1u;
 
-    /* ORDER MATTERS: start the DMA link BEFORE applying the SPI config.
-     * IDF does prepare_tx -> dma_start -> apply_config -> user_start. Doing
-     * apply_config first left the engine parked on the very first transfer. */
+    /* ORDER: DMA link first, then apply config, then trigger. Applying config
+     * before starting the link left the engine parked on the first transfer -
+     * see docs/DESIGN.md 6.6i. */
     gdma_start((const gdma_desc *)chain);
-
     if (spi2_sync() != SPI2_OK) { SPI_DMA_CONF = 0u; return SPI2_E_HANG; }
-
     SPI_CMD = CMD_USR;
-    {
-        uint32_t guard = 0u;
-        while ((SPI_CMD & CMD_USR) != 0u) {
-            if (++guard > SPI2_SPIN_LIMIT) { SPI_DMA_CONF = 0u; return SPI2_E_HANG; }
-        }
-    }
-    /* SPI finishing implies DMA fed it every byte, but the DESCRIPTOR is only
-     * safe to reuse once the engine says so. Waiting here is what makes
-     * reusing a single static descriptor per row correct rather than lucky. */
-    if (gdma_wait() != GDMA_OK) { SPI_DMA_CONF = 0u; return SPI2_E_HANG; }
-
-    SPI_DMA_CONF = 0u;               /* hand the path back to the FIFO */
     return SPI2_OK;
+}
+
+int spi2_dma_finish(void)
+{
+    uint32_t guard = 0u;
+    while ((SPI_CMD & CMD_USR) != 0u) {
+        if (++guard > SPI2_SPIN_LIMIT) { SPI_DMA_CONF = 0u; return SPI2_E_HANG; }
+    }
+    if (gdma_wait() != GDMA_OK) { SPI_DMA_CONF = 0u; return SPI2_E_HANG; }
+    SPI_DMA_CONF = 0u;
+    return SPI2_OK;
+}
+
+int spi2_xfer_dma(const struct gdma_desc *chain, uint32_t len, int quad, int keep_cs)
+{
+    int rc = spi2_dma_start(chain, len, quad, keep_cs);
+    if (rc != SPI2_OK) return rc;
+    return spi2_dma_finish();
 }
 
 int spi2_set_clock(uint32_t mhz)

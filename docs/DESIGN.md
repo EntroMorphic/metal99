@@ -778,10 +778,9 @@ frame*. Measured against real updates, cost per row is dead linear at
 **408 of 448 rows - 91% of the screen - can be updated at a steady 60 Hz on the
 40 MHz bus.** Only a literal full repaint misses, and only by 10%.
 
-And that last 10% is within reach: per-row DMA overhead is 0.97 ms across 448
-separate transfers (banding removes nearly all of it) and render is 0.78 ms
-which can overlap DMA, since the CPU is idle during flush. Together those bring
-a full frame to ~16.54 ms = **60.5 fps**.
+And that last 10% is now **closed** (see 6.6j): banding plus render/DMA overlap
+took a full frame from 18.30 ms to **16.60 ms**, so **every one of the 448 rows
+can be updated at 60 Hz**.
 
 So the honest statement is: **60 Hz is achieved.** The original claim confused
 "full-frame refresh at 60 fps" with "60 fps", and only the former was ever in
@@ -848,6 +847,42 @@ code was hiding a real hardware bug behind a plausible-looking display.
 55.3 -> 54.4 fps, about 1.6%, for the added `gdma_wait()`. Verified over a
 45-second run: 112 reported frames, **zero failures**, flush constant at
 17.46 ms to the hundredth.
+
+### 6.6j Banding + render/DMA overlap - the gap is closed
+
+Two changes, each aimed at a measured cost.
+
+**Banding** collapses 448 single-row transfers into **14 banded descriptor
+chains**. Per-transfer overhead was 0.97 ms above the 16.49 ms of real wire
+time. The descriptor size field is 12 bits, so one descriptor carries at most
+4095 bytes - 5 rows - and a band is therefore a CHAIN. We use 4 rows per
+descriptor (2944 B) so a 32-row band divides evenly into 8.
+
+**Overlap** hides rendering. DMA is asynchronous and the CPU was idle for the
+entire transfer, so band N+1 is now rendered *while band N is on the wire*.
+`spi2_dma_start()` / `spi2_dma_finish()` split the old blocking call. Frame
+time becomes max(render, flush) rather than their sum.
+
+| | before | after |
+|---|---|---|
+| Full frame (448 rows) | 18.30 ms - **110%, misses** | **16.60 ms - 99%, FITS** |
+| Cost per row | 0.041 ms | **0.037 ms** |
+| 32-row elided update | 1.30 ms | **1.20 ms** |
+| Transfers per frame | 448 | **14** |
+| Full-frame fps | 54.6 | **60.2** |
+
+1.70 ms recovered of the 1.75 ms that overhead and render together cost - very
+close to the predicted ceiling.
+
+**Every row is now updatable at 60 Hz.** Combined with elision, a typical
+interface update (32 rows) costs 1.20 ms, or 7.2% of the frame period - about
+14x headroom.
+
+Verified over 20 seconds: ~11,000 frames, **zero failures**, resync firing on
+schedule.
+
+The FIFO transport is retained alongside, unbanded and synchronous, because
+measuring both on identical work has repeatedly caught wrong assumptions.
 
 ### 6.7 Transfer path: CPU FIFO first
 

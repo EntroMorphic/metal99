@@ -76,4 +76,14 @@ int spi2_write(const uint8_t *data, uint32_t len, int quad);
 struct gdma_desc;
 int spi2_xfer_dma(const struct gdma_desc *chain, uint32_t len, int quad, int keep_cs);
 
+/*
+ * Split async form of the above. The CPU is otherwise idle for the whole
+ * transfer, so a caller can render the NEXT band between start and finish.
+ *
+ * Every _start MUST be matched by a _finish before the descriptors or their
+ * buffers are touched again.
+ */
+int spi2_dma_start(const struct gdma_desc *chain, uint32_t len, int quad, int keep_cs);
+int spi2_dma_finish(void);
+
 #endif /* SPI2_H */

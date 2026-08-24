@@ -100,22 +100,62 @@ const sh8601_stats *sh8601_last_frame(void) { return &g_stats; }
 
 
 
+/*
+ * BANDED, DOUBLE-BUFFERED SPAN WRITE.
+ *
+ * Two changes over one-DMA-per-row, each closing a measured cost:
+ *
+ *  BANDING removes per-transfer overhead. 448 row transfers cost 0.97 ms above
+ *  the 16.49 ms of actual wire time; 14 band transfers cost almost nothing.
+ *  The descriptor size field is 12 bits, so one descriptor carries at most
+ *  4095 bytes - 5 rows. A band is therefore a CHAIN, and we use 4 rows per
+ *  descriptor (2944 B) to divide evenly.
+ *
+ *  OVERLAP hides rendering. DMA is asynchronous and the CPU is idle for the
+ *  whole transfer, so band N+1 is rendered while band N is on the wire. Frame
+ *  time becomes max(render, flush) instead of their sum.
+ */
+#define BAND_ROWS      32
+#define ROWS_PER_DESC  4
+#define DESCS_PER_BAND (BAND_ROWS / ROWS_PER_DESC)
+#define BAND_BYTES     (BAND_ROWS * SH8601_WIDTH * 2)
+
+static uint16_t  VEC_ALIGN g_band[2][BAND_ROWS * SH8601_WIDTH];
+static gdma_desc           g_chain[2][DESCS_PER_BAND];
+
+/* Build a descriptor chain covering `rows` rows of band buffer `b`. */
+static void band_chain(int b, int rows)
+{
+    int used = (rows + ROWS_PER_DESC - 1) / ROWS_PER_DESC;
+    int d;
+    for (d = 0; d < used; d++) {
+        int r0 = d * ROWS_PER_DESC;
+        int n  = rows - r0;
+        int last;
+        if (n > ROWS_PER_DESC) n = ROWS_PER_DESC;
+        last = (d == used - 1);
+
+        g_chain[b][d].dw0    = GDMA_DW0(n * SH8601_WIDTH * 2,
+                                        n * SH8601_WIDTH * 2, last);
+        g_chain[b][d].buffer = &g_band[b][(size_t)r0 * SH8601_WIDTH];
+        g_chain[b][d].next   = last ? NULL : &g_chain[b][d + 1];
+    }
+}
+
 int sh8601_write_span(uint16_t y0, uint16_t y1, void (*rowfn)(uint16_t *row, int y))
 {
-    static uint16_t VEC_ALIGN row[SH8601_WIDTH];
     uint8_t VEC_ALIGN word[16];
     uint32_t t_frame = cpu_cycles();
     uint32_t t_mark;
-    int rc, y;
+    int rc, y, b = 0, pending = 0, pend_rows = 0;
+    int total = (int)y1 - (int)y0 + 1;
 
-    if (rowfn == NULL)               return SPI2_E_NULL;
+    if (rowfn == NULL)                  return SPI2_E_NULL;
     if (y1 < y0 || y1 >= SH8601_HEIGHT) return SPI2_E_LEN;
 
     rc = sh8601_set_window(0u, y0, SH8601_WIDTH - 1u, y1);
     if (rc != SPI2_OK) return rc;
 
-    /* 0x32 selects the four-line data phase; 0x2C is memory-write. CS is held
-     * from here through the last pixel of the span. */
     word[0] = OPCODE_PIXEL; word[1] = 0x00u; word[2] = 0x2Cu; word[3] = 0x00u;
     rc = spi2_xfer(word, 4u, 0, 1);
     if (rc != SPI2_OK) return rc;
@@ -124,18 +164,69 @@ int sh8601_write_span(uint16_t y0, uint16_t y1, void (*rowfn)(uint16_t *row, int
     g_stats.flush_cycles  = 0u;
     g_stats.bytes         = 0u;
 
-    for (y = (int)y0; y <= (int)y1; y++) {
+    /* FIFO transport: no banding possible (64-byte FIFO), no overlap possible
+     * (transfers are synchronous). Kept because measuring both transports on
+     * identical work has caught more than one wrong assumption. */
+    if (!g_use_dma) {
+        static uint16_t VEC_ALIGN one[SH8601_WIDTH];
+        for (y = (int)y0; y <= (int)y1; y++) {
+            t_mark = cpu_cycles();
+            rowfn(one, y);
+            g_stats.render_cycles += cpu_cycles() - t_mark;
+
+            t_mark = cpu_cycles();
+            rc = stream((const uint8_t *)one, (uint32_t)SH8601_WIDTH * 2u,
+                        (y == (int)y1));
+            g_stats.flush_cycles += cpu_cycles() - t_mark;
+            if (rc != SPI2_OK) return rc;
+            g_stats.bytes += (uint32_t)SH8601_WIDTH * 2u;
+        }
+        g_stats.total_cycles = cpu_cycles() - t_frame;
+        return SPI2_OK;
+    }
+
+    for (y = (int)y0; y <= (int)y1; ) {
+        int rows = (int)y1 - y + 1;
+        int r;
+        if (rows > BAND_ROWS) rows = BAND_ROWS;
+
+        /* Render into the free buffer. If a transfer is in flight this runs
+         * CONCURRENTLY with it - that is the whole point. */
         t_mark = cpu_cycles();
-        rowfn(row, y);
+        for (r = 0; r < rows; r++) {
+            rowfn(&g_band[b][(size_t)r * SH8601_WIDTH], y + r);
+        }
         g_stats.render_cycles += cpu_cycles() - t_mark;
 
+        /* Only now collect the previous transfer. */
+        if (pending) {
+            t_mark = cpu_cycles();
+            rc = spi2_dma_finish();
+            g_stats.flush_cycles += cpu_cycles() - t_mark;
+            if (rc != SPI2_OK) return rc;
+            g_stats.bytes += (uint32_t)pend_rows * SH8601_WIDTH * 2u;
+        }
+
+        band_chain(b, rows);
         t_mark = cpu_cycles();
-        rc = stream((const uint8_t *)row, (uint32_t)SH8601_WIDTH * 2u,
-                    (y == (int)y1));
+        rc = spi2_dma_start(g_chain[b], (uint32_t)rows * SH8601_WIDTH * 2u,
+                            1 /* quad */, (y + rows > (int)y1) ? 0 : 1);
         g_stats.flush_cycles += cpu_cycles() - t_mark;
         if (rc != SPI2_OK) return rc;
-        g_stats.bytes += (uint32_t)SH8601_WIDTH * 2u;
+
+        pending = 1; pend_rows = rows;
+        y += rows;
+        b ^= 1;
     }
+
+    if (pending) {
+        t_mark = cpu_cycles();
+        rc = spi2_dma_finish();
+        g_stats.flush_cycles += cpu_cycles() - t_mark;
+        if (rc != SPI2_OK) return rc;
+        g_stats.bytes += (uint32_t)pend_rows * SH8601_WIDTH * 2u;
+    }
+    (void)total;
     g_stats.total_cycles = cpu_cycles() - t_frame;
     return SPI2_OK;
 }
