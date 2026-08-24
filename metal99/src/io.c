@@ -2,11 +2,26 @@
 
 uint32_t g_cpu_hz = CPU_HZ_BOOT;   /* updated by clk_set_cpu() */
 
+/*
+ * TELEMETRY MUST NOT PERTURB THE SYSTEM IT MEASURES.
+ *
+ * This guard was 2,000,000 iterations - about 125 ms PER CHARACTER at 160 MHz
+ * once the USB FIFO fills, which it always does when nobody is draining the
+ * console. A single 60-character line could stall the CPU for seconds.
+ *
+ * That artefact was misread three times: as `late=620`, then `late=19`, then as
+ * the animation "choking" while being watched without a capture attached. Each
+ * time it looked like a graphics problem.
+ *
+ * 200 iterations is ~12 us per character. If the host is not reading we DROP
+ * the byte rather than stalling the render loop. Losing console output is
+ * strictly better than distorting the thing being measured.
+ */
 static void usj_putc(char c)
 {
     uint32_t guard = 0;
     while (!(USJ_EP1_CONF & USJ_IN_EP_DATA_FREE)) {
-        if (++guard > 2000000u) return;   /* host not reading: drop, never hang */
+        if (++guard > 200u) return;       /* host not reading: drop, do not stall */
     }
     USJ_EP1 = (uint32_t)(unsigned char)c;
     USJ_EP1_CONF = USJ_WR_DONE;
@@ -16,7 +31,7 @@ static void uart_putc(char c)
 {
     uint32_t guard = 0;
     while (((UART0_STATUS >> 16) & 0x3FFu) > 100u) {
-        if (++guard > 2000000u) return;
+        if (++guard > 200u) return;       /* same reasoning as usj_putc */
     }
     UART0_FIFO = (uint32_t)(unsigned char)c;
 }

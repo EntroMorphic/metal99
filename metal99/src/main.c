@@ -11,27 +11,25 @@
 
 /* A representative interface: a static background with one moving element.
  * This is what real UIs look like - almost nothing changes between frames. */
-#define BAR_H 24
+/* 24 rows of 448 on a 1.8-inch panel is ~1.7mm - at the top edge it reads as
+ * "nothing there". Big enough to be unambiguous. */
+#define BAR_H 96
 static int g_bar_y;
+
+static void white(uint16_t *row, int y)
+{
+    (void)y;
+    vec_fill16(row, sh8601_rgb565(255, 255, 255), ROW_VECTORS);
+}
 
 static void scene(uint16_t *row, int y)
 {
+    /* Black everywhere except the bar. On an AMOLED black is unlit, so any
+     * pixel that should have been erased and was not is unmistakable. */
     if ((y >= g_bar_y) && (y < g_bar_y + BAR_H)) {
-        vec_fill16(row, sh8601_rgb565(255, 40, 0), ROW_VECTORS);      /* the mover */
+        vec_fill16(row, sh8601_rgb565(255, 60, 0), ROW_VECTORS);
     } else {
-        /* Static background: five bands. */
-        static uint16_t bg[5];
-        static int ready = 0;
-        if (!ready) {
-            /* Visible on an AMOLED. The first attempt used values around
-             * rgb565(10,10,30), which is essentially black - the screen looked
-             * unpowered. */
-            bg[0] = sh8601_rgb565(0,  40, 120);  bg[1] = sh8601_rgb565(0,  70, 170);
-            bg[2] = sh8601_rgb565(0, 110, 220);  bg[3] = sh8601_rgb565(0,  70, 170);
-            bg[4] = sh8601_rgb565(0,  40, 120);
-            ready = 1;
-        }
-        vec_fill16(row, bg[(y * 5) / SH8601_HEIGHT], ROW_VECTORS);
+        vec_fill16(row, sh8601_rgb565(0, 0, 0), ROW_VECTORS);
     }
 }
 
@@ -53,7 +51,32 @@ void app_entry(void)
     (void)spi2_set_clock(40u);
     rc = sh8601_init();
     con_puts("sh8601_init rc="); con_dec((int32_t)rc); con_puts("\r\n");
-    sh8601_set_dma(1);
+
+    /*
+     * IS THE PANEL ALIVE? A boot-time check that does NOT depend on pixels.
+     *
+     * A dark screen is ambiguous: wedged panel, or correct code drawing black?
+     * Filling white and pulsing brightness answers it in two seconds without
+     * involving the elision, banding or DMA paths - only the command path that
+     * first contact proved. If this does not flash, nothing downstream matters.
+     */
+    {
+        int k;
+        con_puts("panel liveness: expect 3 white flashes\r\n");
+        for (k = 0; k < 3; k++) {
+            (void)sh8601_brightness(0xFFu);
+            (void)sh8601_write_frame(white);
+            delay_ms(250u);
+            (void)sh8601_brightness(0x00u);
+            delay_ms(250u);
+        }
+        (void)sh8601_brightness(0xFFu);
+    }
+    /* DISCRIMINATOR: the FIFO row path predates banding and rendered colour
+     * bars and gradients correctly. If the scene looks right here and wrong
+     * with DMA, the fault is in the BANDED path, not in marking or elision. */
+    sh8601_set_dma(0);
+    con_puts("*** FIFO transport (no banding, no overlap) ***\r\n");
 
     /* HYPOTHESIS: the first DMA after sh8601_init needs settling time. The
      * failure recovers only after the error path's 500ms delay, and a full
@@ -75,7 +98,7 @@ void app_entry(void)
      * hold a steady 60 Hz and spend the remaining ~94% of each period on
      * whatever the interface actually wants to do.
      */
-    g_bar_y = 0;
+    g_bar_y = SH8601_HEIGHT / 2 - BAR_H / 2;   /* start centred, not at the edge */
     {
     uint32_t period = CPU_HZ / 60u;      /* cycles in one 60 Hz frame */
     uint32_t next   = cpu_cycles();
@@ -96,8 +119,12 @@ void app_entry(void)
          * Resync hid this completely - every 120 frames scrubbed the evidence.
          * It only became visible with the safety net switched off. */
         {
+            /* First 180 frames (3s at 60Hz): bar STATIONARY. If the screen
+             * shows one clean bar on black, the window/write path is correct
+             * and any smearing afterwards is a MARKING problem. */
+            int step  = (i < 180) ? 0 : 4;
             int old_y = g_bar_y;
-            int new_y = (g_bar_y + 4) % (SH8601_HEIGHT - BAR_H);
+            int new_y = (g_bar_y + step) % (SH8601_HEIGHT - BAR_H);
             elide_mark(old_y, old_y + BAR_H - 1);   /* erase */
             elide_mark(new_y, new_y + BAR_H - 1);   /* draw  */
             g_bar_y = new_y;
