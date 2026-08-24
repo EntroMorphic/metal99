@@ -1,12 +1,14 @@
 #include "spi2.h"
 #include "io.h"
+#include <stddef.h>
 
 /* ---------------------------------------------------------------- bases */
 #define SYSTEM_PERIP_CLK_EN0  REG32(0x600C0018u)
 #define SYSTEM_PERIP_RST_EN0  REG32(0x600C0020u)
 #define SYSTEM_SPI2_BIT       (1u << 6)
 
-#define GPIO_ENABLE_W1TS      REG32(0x60004024u)
+#define GPIO_ENABLE_W1TS      REG32(0x60004024u)   /* GPIO 0..31  */
+#define GPIO_ENABLE1_W1TS     REG32(0x60004030u)   /* GPIO 32..48 */
 #define GPIO_FUNC_OUT_SEL(n)  REG32(0x60004554u + 4u * (uint32_t)(n))
 #define IO_MUX_GPIO(n)        REG32(0x60009004u + 4u * (uint32_t)(n))
 
@@ -20,6 +22,8 @@
 #define SPI_MS_DLEN REG32(SPI2_BASE + 0x1Cu)
 #define SPI_MISC    REG32(SPI2_BASE + 0x20u)
 #define SPI_W(i)    REG32(SPI2_BASE + 0x98u + 4u * (uint32_t)(i))
+#define SPI_DMA_CONF REG32(SPI2_BASE + 0x30u)
+#define SPI_SLAVE    REG32(SPI2_BASE + 0xE0u)
 #define SPI_CLK_GATE REG32(SPI2_BASE + 0xE8u)
 
 /* ---------------------------------------------------------------- fields */
@@ -72,28 +76,6 @@
 #define SIG_FSPIWP   105   /* D2 */
 #define SIG_FSPICS0  110
 
-/* ------------------------------------------------------------- timebase */
-/* TODO calibrate. Over-estimating CPU frequency makes every delay LONGER than
- * asked for, which is the safe direction: the SH8601 sleep-out wait is a
- * minimum, not a target. */
-/* MEASURED 2026-08-24: ROM leaves the CPU at 20 MHz (XTAL/2). If the PLL is
- * ever enabled this MUST change or every delay shortens by the same factor. */
-#define CPU_HZ_ASSUMED 20000000u
-
-static uint32_t ccount(void)
-{
-    uint32_t c;
-    __asm__ __volatile__ ("rsr %0, ccount" : "=a"(c));
-    return c;
-}
-
-void delay_ms(uint32_t ms)
-{
-    uint32_t start = ccount();
-    uint32_t want  = ms * (CPU_HZ_ASSUMED / 1000u);
-    while ((ccount() - start) < want) { }
-}
-
 /* ----------------------------------------------------------------- pins */
 static void route_pin(uint32_t gpio, uint32_t signal)
 {
@@ -103,12 +85,26 @@ static void route_pin(uint32_t gpio, uint32_t signal)
                       | (3u << IOMUX_FUN_DRV_S)
                       | IOMUX_FUN_IE;
 
-    /* Drive the pad. */
-    GPIO_ENABLE_W1TS = (1u << gpio);
+    /* Drive the pad. Two banks: 1u << gpio would be undefined for gpio >= 32,
+     * and this chip has pins up to 48. */
+    if (gpio < 32u) {
+        GPIO_ENABLE_W1TS  = (1u << gpio);
+    } else {
+        GPIO_ENABLE1_W1TS = (1u << (gpio - 32u));
+    }
 
     /* Matrix: peripheral signal -> pad. OEN_SEL=0 lets the peripheral own the
      * output-enable; no inversion. */
     GPIO_FUNC_OUT_SEL(gpio) = signal & 0x1FFu;
+}
+
+static void spi2_sync(void)
+{
+    /* ESP32-S3 latches configuration only when SPI_UPDATE is set; it
+     * self-clears once applied. Skipping this silently transfers with the
+     * PREVIOUS configuration. */
+    SPI_CMD = CMD_UPDATE;
+    while ((SPI_CMD & CMD_UPDATE) != 0u) { }
 }
 
 /* ----------------------------------------------------------------- init */
@@ -144,31 +140,35 @@ void spi2_init(void)
     SPI_USER  = USER_USR_MOSI;                 /* MOSI only; no cmd/addr/dummy */
     SPI_USER1 = 0u;
     SPI_USER2 = 0u;
-    SPI_CTRL  = CTRL_D_POL | CTRL_Q_POL;       /* idle high, MSB-first */
-}
+    SPI_CTRL  = CTRL_D_POL | CTRL_Q_POL;       /* reset defaults: idle high  */
 
-uint32_t spi2_probe(void) { return SPI_CLOCK; }
+    /* 6. Clear state the ROM may have left behind. IDF's master init does the
+     *    same; without it a stale DMA or slave-mode bit would change how our
+     *    FIFO transfers behave, with no diagnostic. */
+    SPI_SLAVE    = 0u;
+    SPI_DMA_CONF = 0u;
+
+    /* 7. Latch. Configuration written above does not take effect until
+     *    SPI_UPDATE is pulsed. */
+    spi2_sync();
+}
 
 /* ------------------------------------------------------------- transfer */
-static void spi2_sync(void)
+int spi2_xfer(const uint8_t *data, uint32_t len, int quad, int keep_cs)
 {
-    /* ESP32-S3 latches configuration only when SPI_UPDATE is set; it
-     * self-clears once applied. Skipping this silently transfers with the
-     * PREVIOUS configuration. */
-    SPI_CMD = CMD_UPDATE;
-    while ((SPI_CMD & CMD_UPDATE) != 0u) { }
-}
+    uint32_t words, i;
 
-void spi2_xfer(const uint8_t *data, uint32_t len, int quad, int keep_cs)
-{
-    uint32_t i;
-
-    if (len == 0u || len > SPI2_FIFO_BYTES) return;
+    /* Report rather than silently dropping: a caller that mis-chunks would
+     * otherwise get a partially-blank panel and no clue why. */
+    if (data == NULL)                    return SPI2_E_NULL;
+    if (len == 0u || len > SPI2_FIFO_BYTES) return SPI2_E_LEN;
 
     /* Pack bytes into W0..W15. The peripheral shifts out byte 0 of each word
      * first, and Xtensa is little-endian, so plain byte-order packing puts
-     * bytes on the wire in array order. */
-    for (i = 0u; i < 16u; i++) {
+     * bytes on the wire in array order. Only the words we actually send are
+     * written - peripheral writes are slow and this is the hot path. */
+    words = (len + 3u) / 4u;
+    for (i = 0u; i < words; i++) {
         uint32_t w = 0u;
         uint32_t b;
         for (b = 0u; b < 4u; b++) {
@@ -178,16 +178,33 @@ void spi2_xfer(const uint8_t *data, uint32_t len, int quad, int keep_cs)
         SPI_W(i) = w;
     }
 
+    /* CK_OUT_EDGE stays 0 and CK_IDLE_EDGE stays 0: that pair IS SPI mode 0.
+     * Both are load-bearing by omission, so do not "tidy" them away. */
     SPI_CTRL = CTRL_D_POL | CTRL_Q_POL;
     SPI_MISC = MISC_CS1_DIS | MISC_CS2_DIS | (keep_cs ? MISC_CS_KEEP_ACTIVE : 0u);
     SPI_USER = USER_USR_MOSI | (quad ? USER_FWRITE_QUAD : 0u);
-    SPI_MS_DLEN = (len * 8u) - 1u;
+    SPI_MS_DLEN = (len * 8u) - 1u;   /* hardware wants bits-minus-one */
 
     spi2_sync();
 
     SPI_CMD = CMD_USR;
     while ((SPI_CMD & CMD_USR) != 0u) { }
+
+    return SPI2_OK;
 }
 
-void spi2_set_clock_reg(uint32_t v) { SPI_CLOCK = v; spi2_sync(); }
-uint32_t spi2_get_clock_reg(void)   { return SPI_CLOCK; }
+int spi2_write(const uint8_t *data, uint32_t len, int quad)
+{
+    if (data == NULL) return SPI2_E_NULL;
+    if (len == 0u)    return SPI2_E_LEN;
+
+    while (len > 0u) {
+        uint32_t n = (len > SPI2_FIFO_BYTES) ? (uint32_t)SPI2_FIFO_BYTES : len;
+        int last = (n == len);
+        int rc = spi2_xfer(data, n, quad, last ? 0 : 1);
+        if (rc != SPI2_OK) return rc;
+        data += n;
+        len  -= n;
+    }
+    return SPI2_OK;
+}

@@ -15,6 +15,15 @@
 #define UART0_FIFO   REG32(0x60000000u)
 #define UART0_STATUS REG32(0x6000001Cu)
 
+/* MEASURED 2026-08-24: the ROM leaves the CPU at 20 MHz (XTAL/2). If the PLL
+ * is ever enabled this MUST change or every delay silently shortens by the
+ * same factor. */
+#define CPU_HZ 20000000u
+
+uint32_t cpu_cycles(void);
+void     delay_us(uint32_t us);
+void     delay_ms(uint32_t ms);
+
 void con_putc(char c);
 void con_puts(const char *s);
 void con_hex32(uint32_t v);

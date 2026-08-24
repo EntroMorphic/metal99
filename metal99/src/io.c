@@ -40,3 +40,24 @@ void con_dec(int32_t v)
     do { b[n++] = (char)('0' + (u % 10u)); u /= 10u; } while (u != 0u);
     while (n > 0) con_putc(b[--n]);
 }
+
+uint32_t cpu_cycles(void)
+{
+    uint32_t c;
+    __asm__ __volatile__ ("rsr %0, ccount" : "=a"(c));
+    return c;
+}
+
+/* ccount wraps every 2^32 cycles (~215 s at 20 MHz); unsigned subtraction
+ * handles the wrap correctly for any interval shorter than that. */
+void delay_us(uint32_t us)
+{
+    uint32_t start = cpu_cycles();
+    uint32_t want  = us * (CPU_HZ / 1000000u);
+    while ((cpu_cycles() - start) < want) { }
+}
+
+void delay_ms(uint32_t ms)
+{
+    while (ms > 0u) { delay_us(1000u); ms--; }   /* per-ms, so no overflow */
+}

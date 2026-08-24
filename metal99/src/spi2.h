@@ -14,6 +14,11 @@
 
 #define SPI2_FIFO_BYTES 64   /* SPI_W0..W15 */
 
+/* Return codes. Negative on failure - callers MUST check. */
+#define SPI2_OK        0
+#define SPI2_E_LEN   (-1)    /* len 0, or > SPI2_FIFO_BYTES */
+#define SPI2_E_NULL  (-2)
+
 /* Clock-gate, reset, route pins through the GPIO matrix, configure mode 0. */
 void spi2_init(void);
 
@@ -21,18 +26,19 @@ void spi2_init(void);
  * One FIFO transaction. len must be 1..SPI2_FIFO_BYTES.
  *   quad    : 0 = data on 1 line, 1 = data on 4 lines (QIO)
  *   keep_cs : 1 = leave CS asserted after this transaction
+ *
+ * CONTRACT: if keep_cs is 1, CS stays LOW until some later transaction runs
+ * with keep_cs 0. Failing to do that leaves the panel selected indefinitely.
+ * Prefer spi2_write() below, which cannot get this wrong.
  */
-void spi2_xfer(const uint8_t *data, uint32_t len, int quad, int keep_cs);
+int spi2_xfer(const uint8_t *data, uint32_t len, int quad, int keep_cs);
 
-/* Read back a register - used to prove the peripheral is clocked and alive. */
-uint32_t spi2_probe(void);
-
-/* Busy-wait. Deliberately over-estimates CPU frequency so waits are never
- * shorter than requested (the SH8601 sleep-out delay is a minimum). */
-void delay_ms(uint32_t ms);
+/*
+ * Arbitrary-length write. Chunks internally, holding CS asserted across every
+ * chunk and releasing it on the last one. This is the safe entry point: it
+ * removes caller-side chunking, which is the easiest way to silently drop
+ * pixels and get a partially-blank panel.
+ */
+int spi2_write(const uint8_t *data, uint32_t len, int quad);
 
 #endif /* SPI2_H */
-
-/* Test hook: override SPI_CLOCK directly so divider configs can be swept. */
-void spi2_set_clock_reg(uint32_t v);
-uint32_t spi2_get_clock_reg(void);

@@ -371,6 +371,44 @@ Note `0x2A` ends at `0x16F` = 367 and `0x2B` at `0x1BF` = 447 — confirming
 Brightness is set to 0 before display-on and raised afterwards, which suppresses
 a flash of garbage framebuffer at power-up. Preserve that ordering.
 
+### 6.6a Red-team review of `spi2.c` (2026-08-24)
+
+Adversarial review after the driver passed. Nine findings; all remediated and
+re-verified on hardware, with a ten-assertion regression test in `main.c`.
+
+| # | Finding | Severity | Fix |
+|---|---|---|---|
+| F1 | `spi2_xfer` returned **silently** on `len == 0` or `len > 64` | **High** | Returns `SPI2_E_LEN`/`E_NULL`; added `spi2_write()` that chunks internally |
+| F2 | ROM-inherited `SPI_SLAVE` / `SPI_DMA_CONF` never cleared | Medium | Cleared in init, as IDF's master init does |
+| F3 | `spi2_init` never pulsed `SPI_UPDATE`, so its config was unlatched | Medium | `spi2_sync()` at end of init |
+| F4 | `spi2_set_clock_reg()` debug hook shipped in the public API | Medium | Removed |
+| F5 | `1u << gpio` is **undefined for gpio >= 32**; this chip has pins to 48 | Medium (latent) | Two-bank handling via `GPIO_ENABLE1_W1TS` |
+| F6 | Always wrote all 16 `W` registers regardless of length | Low (perf) | Write `ceil(len/4)`; **4-byte transfer 889 -> 206 cycles, 4.3x** |
+| F7 | `keep_cs` could strand CS low with no diagnostic | Low | Contract documented; `spi2_write()` cannot get it wrong |
+| F8 | SPI mode 0 was correct only *by omission* of two bits | Cosmetic | Explicit comment so it is not "tidied" away |
+| F9 | `delay_ms` lived in the SPI header and hid a CPU-clock dependency | Low | Moved to `io.h` beside `CPU_HZ` |
+
+**Not a bug:** `D_POL`/`Q_POL` are set to 1, which matches the hardware
+reset default (`1'b1`) - confirmed against the register description.
+
+**The review also found a bug in its own test.** The first run reported
+`FAIL SPI_DMA_CONF cleared`, reading `0x3` after writing 0. Bits 0 and 1 are
+**read-only status** (`DMA_OUTFIFO_EMPTY`, `DMA_INFIFO_FULL`), reset-default 1,
+meaning "idle". The driver was correct; the assertion was wrong. It now masks
+the RO bits. Worth recording because a register that does not read back what
+you wrote is not automatically a defect.
+
+Regression output:
+
+```
+PASS  SPI_SLAVE cleared              PASS  len=64  -> OK
+PASS  SPI_DMA_CONF writable cleared  PASS  write 200B -> OK
+PASS  len=0   -> E_LEN               PASS  write 1B   -> OK
+PASS  len=65  -> E_LEN               PASS  write 0B   -> E
+PASS  NULL    -> E_NULL
+64Bq=1124 64Bs=1316 4B=206 -> 40000 kHz  PASS 40MHz
+```
+
 ### 6.7 Transfer path: CPU FIFO first
 
 Milestone 2 uses the **64-byte CPU FIFO** (`SPI_W0..W15`), not DMA.
