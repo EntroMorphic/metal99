@@ -277,24 +277,23 @@ int spi2_dma_finish(void)
         if (++guard > SPI2_SPIN_LIMIT) { SPI_DMA_CONF = 0u; return SPI2_E_USR; }
     }
     if (gdma_wait() != GDMA_OK) {
-        /* The engine can swallow the very first START after init: it stays
-         * PARKED, the descriptor's owner bit is never cleared, and SPI happily
-         * ships stale AFIFO contents. Root cause is not fully understood after
-         * several attempts, so this RECOVERS rather than pretending it cannot
-         * happen - reset the channel, re-arm, retry once. Documented as a
-         * workaround, not a fix. */
-        if (g_inflight != NULL) {
-            /* Re-arm WITHOUT resetting the channel. Resetting first (via
-             * gdma_restart) also failed, which suggests the reset undoes
-             * whatever the first arm primed. */
-            gdma_start(g_inflight);
-            SPI_CMD = CMD_USR;
-            guard = 0u;
-            while ((SPI_CMD & CMD_USR) != 0u) {
-                if (++guard > SPI2_SPIN_LIMIT) { SPI_DMA_CONF = 0u; return SPI2_E_USR; }
-            }
-            if (gdma_wait() == GDMA_OK) { SPI_DMA_CONF = 0u; return SPI2_OK; }
-        }
+        /*
+         * DO NOT RETRY IN PLACE.
+         *
+         * A swallowed start still leaves SPI running, so it ships stale AFIFO
+         * bytes. Re-arming and resending the same band then delivers it a
+         * SECOND time into a CS-held stream where the panel is auto-incrementing
+         * through a fixed address window. The panel receives more pixels than
+         * the window expects, everything after shifts, and the screen fills with
+         * whatever colour was in flight - observed as a red flash at every
+         * transport switch.
+         *
+         * Bytes cannot be un-sent. The only correct response is to ABORT the
+         * span: drop CS, report, and let the caller redraw. elide_flush() leaves
+         * the rows dirty on failure, so the next frame repaints them properly.
+         */
+        SPI_MISC = MISC_CS1_DIS | MISC_CS2_DIS;   /* release CS, end the stream */
+        (void)spi2_sync();
         SPI_DMA_CONF = 0u;
         return SPI2_E_DMA;
     }

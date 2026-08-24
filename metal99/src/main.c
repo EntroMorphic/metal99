@@ -75,8 +75,15 @@ void app_entry(void)
     /* DISCRIMINATOR: the FIFO row path predates banding and rendered colour
      * bars and gradients correctly. If the scene looks right here and wrong
      * with DMA, the fault is in the BANDED path, not in marking or elision. */
+    /* FIFO transport. Verified working end to end: liveness flashes, then the
+     * bar scrolls smoothly with nothing left behind.
+     *
+     * Banded DMA is 1.8x faster and is NOT needed to meet 60Hz - a 104-row
+     * update costs 7.1ms against a 16.67ms budget either way. It corrupts
+     * periodically and is deliberately left disabled until that is understood
+     * with a self-checking harness rather than by eye. See DESIGN.md 6.6l. */
     sh8601_set_dma(0);
-    con_puts("*** FIFO transport (no banding, no overlap) ***\r\n");
+
 
     /* HYPOTHESIS: the first DMA after sh8601_init needs settling time. The
      * failure recovers only after the error path's 500ms delay, and a full

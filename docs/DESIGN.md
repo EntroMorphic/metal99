@@ -926,6 +926,53 @@ cost **293 ms** before its retry ran. Cut to 200,000 (11x margin): boot frame
 *where*, and three rounds were spent fixing the wrong stage. Now `E_SYNC`,
 `E_USR`, `E_DMA`.
 
+### 6.6l Status: banded DMA is DISABLED. FIFO ships.
+
+**Requirement met with the FIFO transport.** A 104-row interface update costs
+7.1 ms against a 16.67 ms budget - 2.3x headroom, zero late frames in steady
+state, verified by eye as smooth continuous motion with nothing left behind.
+
+**Banded DMA is 1.8x faster and is not needed for 60 Hz.** It corrupts
+periodically - a full-screen flash of the foreground colour - and is disabled
+until that is understood.
+
+#### What is actually known
+
+| | |
+|---|---|
+| FIFO + elision + marking + 60Hz pacing | **verified working** |
+| Panel liveness check at boot | works, and removes the wedged-vs-wrong-code ambiguity |
+| Banded DMA steady-state throughput | 3.8 ms / 104 rows, 16.6 ms full frame |
+| Banded DMA correctness | **periodic corruption, cause unknown** |
+| Boot cold-start DMA swallow | characterised, aborts cleanly, costs one frame |
+
+#### How the investigation went wrong
+
+Worth recording, because the process failure was larger than the bug.
+
+1. **Multiple variables at once.** DMA was tested while transport switching,
+   elision, rolling resync and pacing were all changing. No observation could
+   isolate a cause.
+2. **A human used as the instrument.** Every hypothesis needed someone to look
+   at a screen and describe it, so each round cost minutes and the descriptions
+   could not distinguish "wedged panel showing stale content" from "wrong
+   pixels being drawn". Several conclusions were drawn from a frozen image.
+3. **Hypotheses swapped instead of narrowed.** Stop-before-start, module clock
+   gate, address latch ordering, outfifo-empty clear, settle delay, retry,
+   abort - each replaced the last rather than eliminating a class.
+4. **An error path that corrupted.** The retry re-sent a band into a CS-held
+   stream, shifting everything after it. Added because the root cause was not
+   understood, without asking whether retrying was safe there.
+
+**What should have happened:** build a self-checking harness first - draw a
+known pattern, read back what the panel shows, compare on-device - and only
+then change one variable at a time. The panel cannot be read back, so the
+equivalent is a host-side reference render compared against a captured frame
+description, or an on-device checksum of what was actually transmitted.
+
+Until that exists, banded DMA stays off. It is an optimisation on a path that
+already has 2.3x headroom.
+
 ### 6.7 Transfer path: CPU FIFO first
 
 Milestone 2 uses the **64-byte CPU FIFO** (`SPI_W0..W15`), not DMA.
