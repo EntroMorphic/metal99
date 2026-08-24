@@ -1,6 +1,7 @@
 #include "spi2.h"
 #include "io.h"
 #include "vec.h"
+#include "gdma.h"
 #include <stddef.h>
 
 /* ---------------------------------------------------------------- bases */
@@ -26,6 +27,7 @@
 #define SPI_DMA_CONF REG32(SPI2_BASE + 0x30u)
 #define SPI_SLAVE    REG32(SPI2_BASE + 0xE0u)
 #define SPI_CLK_GATE REG32(SPI2_BASE + 0xE8u)
+#define SPI_DMA_TX_ENA_BIT (1u << 28)
 
 /* ---------------------------------------------------------------- fields */
 #define CMD_USR            (1u << 24)
@@ -197,6 +199,7 @@ int spi2_xfer(const uint8_t *data, uint32_t len, int quad, int keep_cs)
 
     /* CK_OUT_EDGE stays 0 and CK_IDLE_EDGE stays 0: that pair IS SPI mode 0.
      * Both are load-bearing by omission, so do not "tidy" them away. */
+    SPI_DMA_CONF = 0u;               /* FIFO path: DMA must be off */
     SPI_CTRL = CTRL_D_POL | CTRL_Q_POL;
     SPI_MISC = MISC_CS1_DIS | MISC_CS2_DIS | (keep_cs ? MISC_CS_KEEP_ACTIVE : 0u);
     SPI_USER = USER_USR_MOSI | (quad ? USER_FWRITE_QUAD : 0u);
@@ -227,5 +230,30 @@ int spi2_write(const uint8_t *data, uint32_t len, int quad)
         data += n;
         len  -= n;
     }
+    return SPI2_OK;
+}
+
+int spi2_xfer_dma(const struct gdma_desc *chain, uint32_t len, int quad, int keep_cs)
+{
+    if (chain == NULL) return SPI2_E_NULL;
+    if (len == 0u)     return SPI2_E_LEN;
+
+    SPI_DMA_CONF = SPI_DMA_TX_ENA_BIT;
+    SPI_CTRL = CTRL_D_POL | CTRL_Q_POL;
+    SPI_MISC = MISC_CS1_DIS | MISC_CS2_DIS | (keep_cs ? MISC_CS_KEEP_ACTIVE : 0u);
+    SPI_USER = USER_USR_MOSI | (quad ? USER_FWRITE_QUAD : 0u);
+    SPI_MS_DLEN = (len * 8u) - 1u;
+
+    if (spi2_sync() != SPI2_OK) { SPI_DMA_CONF = 0u; return SPI2_E_HANG; }
+
+    gdma_start((const gdma_desc *)chain);
+    SPI_CMD = CMD_USR;
+    {
+        uint32_t guard = 0u;
+        while ((SPI_CMD & CMD_USR) != 0u) {
+            if (++guard > SPI2_SPIN_LIMIT) { SPI_DMA_CONF = 0u; return SPI2_E_HANG; }
+        }
+    }
+    SPI_DMA_CONF = 0u;               /* hand the path back to the FIFO */
     return SPI2_OK;
 }

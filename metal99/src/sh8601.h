@@ -71,4 +71,12 @@ typedef struct {
 
 const sh8601_stats *sh8601_last_frame(void);
 
+/*
+ * Select the pixel transport. Both are kept so the same workload can be
+ * measured through each - a controlled comparison beats a remembered number.
+ *   0 = 64-byte FIFO (vectorised MMIO load)
+ *   1 = GDMA descriptor chain
+ */
+void sh8601_set_dma(int on);
+
 #endif /* SH8601_PANEL_H */

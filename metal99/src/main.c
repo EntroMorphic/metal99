@@ -3,6 +3,7 @@
 #include "vec.h"
 #include "spi2.h"
 #include "sh8601.h"
+#include "gdma.h"
 
 /* 368 px = 736 B = exactly 46 vectors. Full rows need no scalar tail. */
 #define ROW_VECTORS (SH8601_WIDTH * 2 / VEC_BYTES)
@@ -27,7 +28,7 @@ static void colorbars(uint16_t *row, int y)
     vec_fill16(row, bars[(y * 5) / SH8601_HEIGHT], ROW_VECTORS);
 }
 
-static void gradient(uint16_t *row, int y)
+__attribute__((unused)) static void gradient(uint16_t *row, int y)
 {
     uint8_t v = (uint8_t)((y * 255) / (SH8601_HEIGHT - 1));
     vec_fill16(row, sh8601_rgb565(v, (uint8_t)(64u + v / 4u),
@@ -51,6 +52,7 @@ void app_entry(void)
     con_puts("\r\n=== metal99 : streaming telemetry from the real workload ===\r\n");
 
     spi2_init();
+    gdma_init();
     rc = sh8601_init();
     con_puts("sh8601_init rc="); con_dec((int32_t)rc); con_puts("\r\n");
     con_puts("frame | render flush total | eff kB/s | wire-util% | fps\r\n");
@@ -59,7 +61,10 @@ void app_entry(void)
         const sh8601_stats *st;
         uint32_t kbps, util, fps10;
 
-        rc = sh8601_write_frame(((i & 1) == 0) ? colorbars : gradient);
+        /* Same renderer every frame; only the TRANSPORT alternates. Any
+         * difference in the numbers is therefore attributable to transport. */
+        sh8601_set_dma(i & 1);
+        rc = sh8601_write_frame(colorbars);
         if (rc != SPI2_OK) {
             con_puts("  frame FAILED rc="); con_dec((int32_t)rc); con_puts("\r\n");
             delay_ms(1000u);
@@ -75,7 +80,7 @@ void app_entry(void)
         fps10 = (st->total_cycles == 0u) ? 0u
               : (uint32_t)(((uint64_t)CPU_HZ * 10u) / st->total_cycles);
 
-        con_puts(((i & 1) == 0) ? " bars | " : " grad | ");
+        con_puts(((i & 1) == 0) ? " FIFO | " : " GDMA | ");
         put_ms("", st->render_cycles);
         put_ms("", st->flush_cycles);
         put_ms("", st->total_cycles);

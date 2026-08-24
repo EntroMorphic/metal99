@@ -52,4 +52,15 @@ int spi2_xfer(const uint8_t *data, uint32_t len, int quad, int keep_cs);
  */
 int spi2_write(const uint8_t *data, uint32_t len, int quad);
 
+/*
+ * DMA transfer. `chain` is a GDMA descriptor list describing the bytes; the
+ * FIFO is bypassed entirely, so the 16-byte alignment contract above does not
+ * apply (GDMA reads memory directly).
+ *
+ * Sets DMA_TX_ENA for the duration and clears it afterwards, so command
+ * traffic keeps working through the FIFO path.
+ */
+struct gdma_desc;
+int spi2_xfer_dma(const struct gdma_desc *chain, uint32_t len, int quad, int keep_cs);
+
 #endif /* SPI2_H */

@@ -2,6 +2,7 @@
 #include "spi2.h"
 #include "io.h"
 #include "vec.h"
+#include "gdma.h"
 #include <stddef.h>
 
 #define OPCODE_PARAM 0x02u
@@ -61,10 +62,24 @@ int sh8601_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
     return sh8601_cmd(0x2Bu, p, 4u);
 }
 
+static int g_use_dma = 0;
+static gdma_desc g_desc;               /* one row fits: 736 B < 4095 B */
+
+void sh8601_set_dma(int on) { g_use_dma = on; }
+
 /* Chunked send with CS held throughout; only the very last chunk of the very
  * last row releases it. The panel treats a CS rise as end-of-write. */
 static int stream(const uint8_t *d, uint32_t n, int final_row)
 {
+    if (g_use_dma) {
+        /* One descriptor per row. 736 B is inside the 12-bit size field, so no
+         * chaining is needed yet; banding comes next. */
+        g_desc.dw0    = GDMA_DW0(n, n, 1);
+        g_desc.buffer = d;
+        g_desc.next   = NULL;
+        return spi2_xfer_dma(&g_desc, n, 1 /* quad */, final_row ? 0 : 1);
+    }
+
     while (n > 0u) {
         uint32_t c = (n > (uint32_t)SPI2_FIFO_BYTES) ? (uint32_t)SPI2_FIFO_BYTES : n;
         int is_last = (final_row != 0) && (c == n);
