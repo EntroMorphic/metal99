@@ -69,7 +69,12 @@ void gdma_init(void)
 
     /* 4. Burst on both descriptor fetch and data, EOF on the descriptor's
      *    suc_eof rather than a byte count. */
-    GDMA_OUT_CONF0_CH0 = OUTDSCR_BURST_EN | OUT_DATA_BURST_EN | OUT_EOF_MODE;
+    /* HYPOTHESIS: OUTDSCR_BURST_EN prefetches descriptors in bursts. Our
+     * descriptors are 12 bytes, so consecutive entries sit at 12-byte spacing -
+     * a burst fetch may straddle them badly on the first chained transfer.
+     * Single-descriptor spans (1 and 4 rows) pass; the first CHAIN fails.
+     * Data bursting is unaffected and stays on. */
+    GDMA_OUT_CONF0_CH0 = OUT_DATA_BURST_EN | OUT_EOF_MODE;
 
     /* 5. Bind this channel to SPI2. */
     GDMA_OUT_PERI_SEL_CH0 = PERI_SPI2;
@@ -116,7 +121,12 @@ int gdma_restart(const gdma_desc *first)
      * began - see spi2_dma_finish(). */
     GDMA_OUT_CONF0_CH0 = OUT_RST;
     GDMA_OUT_CONF0_CH0 = 0u;
-    GDMA_OUT_CONF0_CH0 = OUTDSCR_BURST_EN | OUT_DATA_BURST_EN | OUT_EOF_MODE;
+    /* HYPOTHESIS: OUTDSCR_BURST_EN prefetches descriptors in bursts. Our
+     * descriptors are 12 bytes, so consecutive entries sit at 12-byte spacing -
+     * a burst fetch may straddle them badly on the first chained transfer.
+     * Single-descriptor spans (1 and 4 rows) pass; the first CHAIN fails.
+     * Data bursting is unaffected and stays on. */
+    GDMA_OUT_CONF0_CH0 = OUT_DATA_BURST_EN | OUT_EOF_MODE;
     GDMA_OUT_PERI_SEL_CH0 = PERI_SPI2;
     GDMA_OUT_INT_CLR_CH0 = 0xFFFFFFFFu;
     GDMA_OUT_LINK_CH0 = 0u;

@@ -72,23 +72,27 @@
 static uint32_t g_led_bytes;
 static uint32_t g_led_digest;
 
-void     spi2_ledger_reset(void)  { g_led_bytes = 0u; g_led_digest = 0u; }
+void     spi2_ledger_reset(void)  { g_led_bytes = 0u; g_led_digest = 0u; vec_fold_reset(); }
 uint32_t spi2_ledger_bytes(void)  { return g_led_bytes; }
 uint32_t spi2_ledger_digest(void) { return g_led_digest; }
 
-/* Order-sensitive and O(1) per transfer, not per byte. Folds the length, the
- * first and last bytes of the payload, and the running total - so a duplicated
- * band changes both the count and the fold and cannot cancel out. */
-static void ledger_add(const uint8_t *d, uint32_t len)
+/*
+ * Records what the hardware was actually told to send.
+ *
+ * The count catches structure - truncation, duplication, missing transfers.
+ * vec_fold() covers EVERY byte, which the previous version did not: it sampled
+ * only the first and last byte, and for solid-colour rows that is blind to the
+ * whole payload. It reported PASS on a visibly broken display.
+ */
+static void ledger_add(const uint8_t *d, uint32_t len, int is_pixels)
 {
-    uint32_t s = g_led_digest;
-    s = (s * 1664525u) + 1013904223u + len;
-    if (len >= 2u) {
-        s ^= (uint32_t)d[0] | ((uint32_t)d[len - 1u] << 16);
-    }
-    s ^= g_led_bytes;
-    g_led_digest = s;
     g_led_bytes += len;
+    /* Only pixel payload is digested. Command preamble - window registers and
+     * the memory-write word - is structure, counted but not folded, so a
+     * reference computed from pixel rows alone can be compared directly. */
+    if (!is_pixels) return;
+    vec_fold(d, len / (uint32_t)VEC_BYTES);      /* whole 128-bit chunks */
+    g_led_digest = vec_fold_get();
 }
 
 /* -------------------------------------------------------------- pin map */
@@ -245,7 +249,7 @@ int spi2_xfer(const uint8_t *data, uint32_t len, int quad, int keep_cs)
             if (++guard > SPI2_SPIN_LIMIT) return SPI2_E_HANG;
         }
     }
-    ledger_add(data, len);
+    ledger_add(data, len, quad);
     return SPI2_OK;
 }
 
@@ -294,6 +298,16 @@ int spi2_dma_start(const struct gdma_desc *chain, uint32_t len, int quad, int ke
     g_inflight     = (const gdma_desc *)chain;
     g_inflight_len = len;
     g_inflight_buf = (const uint8_t *)((const gdma_desc *)chain)->buffer;
+
+    /* ARM TWICE, TRIGGER ONCE.
+     *
+     * The first arm after init is swallowed - the engine stays PARKED and the
+     * descriptor is never fetched - while a second arm takes. Because SPI has
+     * not been triggered yet, the wasted arm moves no data and reaches no
+     * peripheral, so this is free and cannot corrupt a stream. It replaces the
+     * old retry, which re-sent a band mid-stream and shifted everything after
+     * it. Arming an already-armed idle channel is harmless. */
+    gdma_start((const gdma_desc *)chain);
     gdma_start((const gdma_desc *)chain);
     if (spi2_sync() != SPI2_OK) { SPI_DMA_CONF = 0u; return SPI2_E_SYNC; }
     SPI_CMD = CMD_USR;
@@ -327,7 +341,7 @@ int spi2_dma_finish(void)
         SPI_DMA_CONF = 0u;
         return SPI2_E_DMA;
     }
-    ledger_add(g_inflight_buf, g_inflight_len);
+    ledger_add(g_inflight_buf, g_inflight_len, 1);
     SPI_DMA_CONF = 0u;
     return SPI2_OK;
 }

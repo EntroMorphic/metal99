@@ -45,4 +45,29 @@ void vec_copy(void *dst, const void *src, uint32_t vectors);
 /* Zero `vectors` * 16 bytes. */
 void vec_zero(void *dst, uint32_t vectors);
 
+/* dst[i] = start + i*step, i in units of 16-bit lanes. Builds a positionally
+ * unique ramp with no scalar per-element work. */
+void vec_ramp16(uint16_t *dst, uint16_t start, uint16_t step, uint32_t vectors);
+
+/* dst ^= src, 16-bit lanes. */
+void vec_xor16(uint16_t *dst, const uint16_t *src, uint32_t vectors);
+
+/*
+ * CONTENT DIGEST - folds EVERY byte, not a sample.
+ *
+ * The previous ledger folded only the first and last byte of each transfer,
+ * which for solid-colour rows is blind to the entire payload. It reported
+ * PASS on a visibly broken display. This covers the whole buffer.
+ *
+ * WHAT IT CATCHES, given a positionally unique pattern: any wrong value,
+ * omission, truncation, or duplication (a duplicate XORs a chunk twice and
+ * cancels it, changing the result).
+ * WHAT IT MISSES: an exact reordering of whole 128-bit chunks within a single
+ * transfer. DMA reads descriptors sequentially, so that is not a failure mode
+ * here - but it is a real limit and is stated rather than glossed over.
+ */
+void     vec_fold_reset(void);
+void     vec_fold(const void *p, uint32_t vectors);
+uint32_t vec_fold_get(void);
+
 #endif /* VEC_H */

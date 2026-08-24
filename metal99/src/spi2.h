@@ -66,6 +66,7 @@ void spi2_cs_release(void);
  *
  * Cost is O(1) per transfer, not per byte.
  */
+/* Reset also clears the content digest. */
 void     spi2_ledger_reset(void);
 uint32_t spi2_ledger_bytes(void);
 uint32_t spi2_ledger_digest(void);
