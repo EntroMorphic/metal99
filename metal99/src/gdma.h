@@ -18,6 +18,8 @@
 #define GDMA_MAX_XFER   4095u          /* 12-bit size field       */
 #define GDMA_OK          0
 #define GDMA_E_HANG    (-1)
+#define GDMA_E_ADDR    (-2)    /* descriptor outside internal SRAM */
+#define GDMA_E_LEN     (-3)    /* transfer exceeds the 12-bit size field */
 
 /* Hardware descriptor. Layout fixed by silicon - do not reorder. */
 typedef struct gdma_desc {
@@ -36,7 +38,19 @@ void gdma_init(void);
 /* Kick off a descriptor chain. Returns immediately - the CPU is free. */
 void gdma_start(const gdma_desc *first);
 
-/* Block until the chain completes. Bounded; never spins forever. */
+/* Block until the chain completes. Bounded; never spins forever.
+ * MUST be called before the descriptor or its buffer is reused. */
 int  gdma_wait(void);
+
+/* Descriptors are fetched via a 20-bit address field, so they must live in
+ * internal SRAM. Checked rather than assumed. */
+int  gdma_desc_addr_ok(const void *p);
+
+/* Raw interrupt status last observed by gdma_wait() - for diagnosis. */
+uint32_t gdma_last_status(void);
+
+/* Register snapshot, for diagnosing a transfer that signalled nothing. */
+uint32_t gdma_dbg_link(void);
+uint32_t gdma_dbg_conf0(void);
 
 #endif /* GDMA_H */

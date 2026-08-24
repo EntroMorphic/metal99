@@ -14,10 +14,15 @@
 #include <stdint.h>
 
 #define CLK_OK        0
-#define CLK_E_BADFREQ (-1)
+#define CLK_E_BADFREQ  (-1)
+#define CLK_E_NOSWITCH (-2)   /* SOC_CLK_SEL did not read back as requested */
 
 /* mhz must be 80, 160 or 240. Updates g_cpu_hz on success. */
 int clk_set_cpu_pll(uint32_t mhz);
+
+/* Back to the 20 MHz boot clock. Exists so a caller is never stranded at a
+ * clock it cannot leave. */
+int clk_set_cpu_xtal(void);
 
 /* Whatever CPU_CLK is currently sourced from: 0 XTAL, 1 PLL, 2 RC_FAST. */
 uint32_t clk_cpu_src(void);

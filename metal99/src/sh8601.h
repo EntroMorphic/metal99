@@ -79,4 +79,8 @@ const sh8601_stats *sh8601_last_frame(void);
  */
 void sh8601_set_dma(int on);
 
+/* Descriptor word 0 after the last DMA row - owner bit tells us whether the
+ * engine ever consumed it. */
+uint32_t sh8601_dbg_desc(void);
+
 #endif /* SH8601_PANEL_H */

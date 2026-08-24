@@ -778,6 +778,49 @@ carries ~320 KB - 97% of a full frame, but **5x** a screen that updates 20% of
 its area. Elision is no longer the elegant option; it is the only route to a
 steady 60 Hz.
 
+### 6.6i Red-team of the GDMA/PLL work (2026-08-24)
+
+Seven findings, all remediated. One of them was hiding a genuine hardware bug.
+
+| # | Finding | Sev | Fix |
+|---|---|---|---|
+| B1 | **`gdma_wait()` was dead code** - the DMA path never synchronised | **High** | called, with stale-EOF cleared first |
+| B1a | **DMA start / SPI_UPDATE ordering** - engine stayed PARKED on the first transfer | **High** | `gdma_start()` now precedes `spi2_sync()` |
+| B2 | Descriptor address truncated to a 20-bit field, unvalidated | Med | `gdma_desc_addr_ok()` checks internal SRAM |
+| B3 | AFIFOs never reset per transfer; latched outfifo-empty error never cleared | Med | mirrors IDF's `spi_hal_hw_prepare_tx()` |
+| B4 | `clk_set_cpu_pll()` switched **blind** - no readback | Med | verifies `SOC_CLK_SEL`; added `clk_set_cpu_xtal()` |
+| B6 | Vector register allocation was accidental | Low | documented as a contract in `vec.h` |
+| B7 | DMA length never checked against the 12-bit size field | Med | returns `SPI2_E_LEN`; **a landmine directly in banding's path** |
+
+#### B1 was concealing B1a, and that is the real lesson
+
+`gdma_wait()` existed but was never called. Calling it immediately exposed a
+timeout on the **very first** DMA transfer, every boot, deterministically.
+
+Diagnosis came from dumping state rather than guessing - four hypotheses
+(stop-before-start, module clock gate, address-latch ordering, outfifo-empty
+clear) all failed before the data pointed at the answer:
+
+```
+raw=0x00000000  link=0x008A8550  conf0=0x00000038  desc.dw0=0xC02E02E0
+                     ^ OUTLINK_PARK=1              ^ owner=1, never fetched
+```
+
+Root cause: **`gdma_start()` must precede `SPI_UPDATE`, not follow it.** IDF's
+order is `prepare_tx -> dma_start -> apply_config -> user_start`; ours applied
+the config first, and the first transfer's DMA request was missed.
+
+What makes this worth recording is the *shape* of the failure. With no
+synchronisation, SPI completed anyway and shipped **stale AFIFO contents** -
+one garbage frame per boot, no error, nothing visible. Dead synchronisation
+code was hiding a real hardware bug behind a plausible-looking display.
+
+#### Cost of correctness
+
+55.3 -> 54.4 fps, about 1.6%, for the added `gdma_wait()`. Verified over a
+45-second run: 112 reported frames, **zero failures**, flush constant at
+17.46 ms to the hundredth.
+
 ### 6.7 Transfer path: CPU FIFO first
 
 Milestone 2 uses the **64-byte CPU FIFO** (`SPI_W0..W15`), not DMA.

@@ -16,6 +16,22 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/*
+ * VECTOR REGISTER ALLOCATION - a contract, not an accident.
+ *
+ * There is no compiler awareness of the q registers, so nothing stops two
+ * modules clobbering each other. Current owners:
+ *
+ *   q0  vec_fill16
+ *   q1  vec_copy
+ *   q2  vec_zero
+ *   q3  spi2 FIFO load
+ *   q4-q7  UNUSED - take these for new code
+ *
+ * Any new EE.* code must claim a register here first. A collision would show
+ * up as intermittent visual corruption, which is exactly the kind of bug this
+ * project keeps paying for.
+ */
 #define VEC_ALIGN __attribute__((aligned(16)))
 #define VEC_BYTES 16
 #define VEC_PIX16 8            /* 16-bit pixels per 128-bit vector */

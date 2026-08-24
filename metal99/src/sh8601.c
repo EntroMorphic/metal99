@@ -72,8 +72,10 @@ void sh8601_set_dma(int on) { g_use_dma = on; }
 static int stream(const uint8_t *d, uint32_t n, int final_row)
 {
     if (g_use_dma) {
-        /* One descriptor per row. 736 B is inside the 12-bit size field, so no
-         * chaining is needed yet; banding comes next. */
+        /* The descriptor size/length fields are 12 bits. A longer transfer
+         * would silently WRAP, sending the wrong byte count with no error -
+         * and banding, the next feature, will push right past this limit. */
+        if (n > GDMA_MAX_XFER) return SPI2_E_LEN;
         g_desc.dw0    = GDMA_DW0(n, n, 1);
         g_desc.buffer = d;
         g_desc.next   = NULL;
@@ -216,3 +218,5 @@ int sh8601_scroll_start(uint16_t row)
     p[1] = (uint8_t)(row & 0xFFu);
     return sh8601_cmd(0x37u, p, 2u);
 }
+
+uint32_t sh8601_dbg_desc(void) { return g_desc.dw0; }

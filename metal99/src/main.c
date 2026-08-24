@@ -97,7 +97,12 @@ void app_entry(void)
 
         rc = sh8601_write_frame(colorbars);
         if (rc != SPI2_OK) {
-            con_puts("  frame FAILED rc="); con_dec((int32_t)rc); con_puts("\r\n");
+            con_puts("  frame FAILED rc="); con_dec((int32_t)rc);
+            con_puts("  raw="); con_hex32(gdma_last_status());
+            con_puts(" link="); con_hex32(gdma_dbg_link());
+            con_puts(" conf0="); con_hex32(gdma_dbg_conf0());
+            con_puts(" desc.dw0="); con_hex32(sh8601_dbg_desc());
+            con_puts("\r\n");
             delay_ms(500u); continue;
         }
         if ((i % 20) != 0) continue;

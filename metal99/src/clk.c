@@ -48,8 +48,25 @@ int clk_set_cpu_pll(uint32_t mhz)
     v |= SRC_PLL << SOC_CLK_SEL_S;
     SYSTEM_SYSCLK_CONF = v;
 
+    /* Verify the switch actually took. Writing SOC_CLK_SEL does not guarantee
+     * the source changed - if the BBPLL were not running the core would stall
+     * instead, and we would never reach here. Reading it back is cheap and
+     * turns a silent assumption into a checked one. */
+    if (clk_cpu_src() != SRC_PLL) return CLK_E_NOSWITCH;
+
     /* Keep the timebase honest. Everything downstream - delays, telemetry,
      * the panel's 120 ms sleep-out minimum - reads this. */
     g_cpu_hz = mhz * 1000000u;
+    return CLK_OK;
+}
+
+int clk_set_cpu_xtal(void)
+{
+    uint32_t v = SYSTEM_SYSCLK_CONF;
+    v &= ~(SOC_CLK_SEL_M << SOC_CLK_SEL_S);
+    v |= SRC_XTAL << SOC_CLK_SEL_S;
+    SYSTEM_SYSCLK_CONF = v;
+    if (clk_cpu_src() != SRC_XTAL) return CLK_E_NOSWITCH;
+    g_cpu_hz = CPU_HZ_BOOT;
     return CLK_OK;
 }
