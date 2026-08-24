@@ -16,6 +16,7 @@ about thirty times.
 | `flash.sh` | Build, flash to `0x0`, optionally capture | the build/flash loop |
 | `isa_probe.sh` | Which `EE.*` vector mnemonics assemble | the ISA table in DESIGN.md 6.8 |
 | `neogpu_sizes.c` | NeoGPU struct sizes + capacity cost | the memory budget in DESIGN.md 7.4 |
+| `reg.sh` | Look up S3 registers/bitfields from the SoC headers | hand-grepped ~15x during bring-up |
 | `tests/host/` | Run metal99 renderers on the desktop -> PPM | ~200ms iteration vs a flash cycle |
 
 ## Gotchas worth keeping
