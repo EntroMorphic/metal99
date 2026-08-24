@@ -551,6 +551,33 @@ when nothing was actually reaching the panel.
 
 The only true cold start is a **physical power cycle**; a CPU reset is not one.
 
+### 6.6e MILESTONE 2 COMPLETE - cold start verified 2026-08-24
+
+Physical USB unplug/replug, which drops power to the panel and clears its RAM.
+On replug the bars/magenta animation returned. A ghost is impossible here, so
+everything displayed was produced by our own code starting from nothing.
+
+**metal99 now drives the display end to end with zero dependencies:**
+
+| Layer | Status |
+|---|---|
+| Boot from flash `0x0` via mask ROM into SRAM | verified |
+| Watchdog disable, `.bss` zeroing, USB-JTAG console | verified |
+| SPI2 QSPI at 40 MHz, quad mode | verified by timing |
+| SH8601 init from a cold panel | verified by power cycle |
+| Address window, RGB565 big-endian pixels | verified visually |
+| Row-streamed frames, no framebuffer in RAM | verified |
+
+2,240-byte image. Pure ISO C99 under `-pedantic-errors -Wall -Wextra -Werror`.
+No ESP-IDF, no FreeRTOS, no libc, no ROM calls.
+
+**What remains is performance, and both levers are measured and independent:**
+
+| Lever | Current | Expected |
+|---|---|---|
+| GDMA instead of 64-byte FIFO | 6 % bus utilisation, 311 ms/frame | ~17x - the FIFO path is overhead-bound, not bus-bound |
+| PLL instead of ROM default | CPU 20 MHz | 12x on per-pixel work; flush is unaffected, being bus-bound |
+
 ### 6.7 Transfer path: CPU FIFO first
 
 Milestone 2 uses the **64-byte CPU FIFO** (`SPI_W0..W15`), not DMA.
@@ -699,7 +726,7 @@ Each milestone has a criterion that fails loudly rather than silently.
 | 2b-i | Command path (brightness) | Frozen image pulses under command | **DONE** |
 | 2b-ii | Pixel path | Colour bars + gradient render correctly | **DONE** |
 | 2b-iii | Our own init sequence | init + redraw verified; sleep/wake unsupported | **DONE** |
-| 2b-iv | Power-cycle cold start | Panel comes up after physical unplug | next |
+| 2b-iv | Power-cycle cold start | Bars/magenta alternate after physical replug | **DONE** |
 | 3 | GDMA transfer | Same bars, full frame under 25 ms | specified |
 | 4 | Renderer integration | `render_c99.c` plasma at >= 25 fps | specified |
 | 5 | Messaging layer | Opcode stream drives the panel; `OP_PRESENT` produces a visible frame | specified |
