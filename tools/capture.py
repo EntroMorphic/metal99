@@ -23,7 +23,7 @@ except ImportError:
 DEFAULT_PORT = "/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_30:ED:A0:AC:91:54-if00"
 
 
-def capture(port, seconds, do_reset, pattern, raw):
+def capture(port, seconds, do_reset, pattern, raw, stamp=False):
     try:
         p = serial.Serial(port, 115200, timeout=0.3)
     except Exception as e:
@@ -35,12 +35,24 @@ def capture(port, seconds, do_reset, pattern, raw):
         p.setRTS(True);  time.sleep(0.15)
         p.setRTS(False)
 
-    buf, t0 = b"", time.time()
+    buf, t0, stamped = b"", time.time(), []
     while time.time() - t0 < seconds:
         d = p.read(4096)
         if d:
             buf += d
+            if stamp:
+                # timestamp each COMPLETE line as it arrives; the partial tail
+                # stays in the buffer until its newline turns up
+                while b"\n" in buf:
+                    line, buf = buf.split(b"\n", 1)
+                    stamped.append((time.time() - t0,
+                                    line.decode("utf-8", "replace").rstrip()))
     p.close()
+
+    if stamp:
+        rx = re.compile(pattern) if pattern else None
+        return "\n".join("%8.3fs  %s" % (t, l) for t, l in stamped
+                          if l.strip() and (rx.search(l) if rx else True))
 
     text = buf.decode("utf-8", "replace")
     if raw:
@@ -58,8 +70,10 @@ def main():
     ap.add_argument("-r", "--reset", action="store_true", help="reset the board first")
     ap.add_argument("-g", "--grep", default=None, help="regex line filter")
     ap.add_argument("--raw", action="store_true", help="unfiltered, keep blank lines")
+    ap.add_argument("-t", "--timestamp", action="store_true",
+                    help="prefix each line with arrival time - use to measure\non-device intervals against a host clock, e.g. deriving CPU frequency")
     a = ap.parse_args()
-    out = capture(a.port, a.seconds, a.reset, a.grep, a.raw)
+    out = capture(a.port, a.seconds, a.reset, a.grep, a.raw, a.timestamp)
     print(out if out else "(no output captured)")
 
 

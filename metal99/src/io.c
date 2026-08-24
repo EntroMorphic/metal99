@@ -1,5 +1,7 @@
 #include "io.h"
 
+uint32_t g_cpu_hz = CPU_HZ_BOOT;   /* updated by clk_set_cpu() */
+
 static void usj_putc(char c)
 {
     uint32_t guard = 0;
