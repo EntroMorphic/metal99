@@ -8,6 +8,12 @@ sdkconfig.old
 # is the thing that keeps the wrong panel driver from creeping back in.
 managed_components/
 
+# archived ESP-IDF stages: build output only, sources stay tracked
+archive/*/build/
+archive/*/sdkconfig
+archive/*/sdkconfig.old
+archive/*/managed_components/
+
 # ---- upstream clone, reproducible ----
 # git clone --depth 1 \
 #   https://github.com/waveshareteam/ESP32-S3-Touch-AMOLED-1.8.git waveshare-demo
