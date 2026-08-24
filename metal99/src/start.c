@@ -14,6 +14,12 @@ void _start(void)
 {
     uint32_t *p;
     wdt_disable_all();          /* before anything that takes time */
+
+    /* Xtensa gates coprocessors behind CPENABLE; the 128-bit vector unit (PIE)
+     * is one of them. Nothing has enabled it bare metal, so any EE.* would trap
+     * as Coprocessor Disabled. No context switching here, so enable all of them
+     * permanently and never think about it again. */
+    __asm__ __volatile__ ("wsr.cpenable %0\n rsync" : : "a"(0xFFu));
     for (p = &_bss_start; p < &_bss_end; p++) *p = 0u;
     app_entry();
     for (;;) { __asm__ __volatile__ ("waiti 0"); }

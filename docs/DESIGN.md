@@ -630,6 +630,56 @@ set `SPI_CMD.USR`; poll `SPI_CMD.USR` until clear; repeat.
 
 ---
 
+## 6.8 PROJECT RULE: no scalar per-element math
+
+**Non-negotiable.** All bulk data work goes through the LX7's 128-bit vector
+unit. No scalar loops over pixels or bytes.
+
+Two blockers had to be cleared before this was even possible:
+
+1. **GCC-for-Xtensa does not auto-vectorise to `EE.*`.** They must be written as
+   inline `__asm__`. That is ISO-legal - the reserved `__asm__` spelling, not the
+   bare `asm` keyword `-pedantic-errors` rejects - and consistent with the
+   `rsr`/`waiti` we already use. ESP-DSP and ESP-NN are dependencies we exclude.
+2. **The vector unit is a gated coprocessor** (`XCHAL_HAVE_CP = 1`). Nothing
+   enables it bare metal, so the first `EE.*` traps as Coprocessor Disabled.
+   `start.c` now sets `CPENABLE = 0xFF` before anything else. With no context
+   switching, enabling all coprocessors permanently is safe and free.
+
+### Primitives (`vec.h` / `vec.c`)
+
+| Function | Implementation |
+|---|---|
+| `vec_fill16` | `EE.VLDBC.16` broadcast + `EE.VST.128.IP` loop |
+| `vec_copy` | `EE.VLD.128.IP` / `EE.VST.128.IP` |
+| `vec_zero` | `EE.ZERO.Q` + `EE.VST.128.IP` |
+
+**Alignment contract:** 16-byte aligned pointers, lengths a multiple of 16 B.
+Use `VEC_ALIGN`. Conveniently **368 px = 736 B = exactly 46 vectors**, so a full
+row divides evenly and needs no scalar tail handling.
+
+### Measured
+
+Row fill of 368 px: **364 cycles = 0.99 cycles/pixel** (scalar was ~3-4).
+Verified on hardware: fill, zero and copy all produce correct data, and the
+panel renders from vectorised fills.
+
+### Where scalar remains, and why
+
+| Site | Status |
+|---|---|
+| Row fills | vectorised |
+| `.bss` zeroing | scalar word loop - to convert |
+| **`spi2_xfer` W-packing** | **scalar per-byte, 5,152x/frame** |
+| `sh8601_rgb565` | single value, not bulk |
+| `con_dec` | console formatting |
+| Loop counters, addresses, branches | inherent control flow |
+
+The W-packing loop is the hottest scalar code we have, but its destination is
+**MMIO peripheral registers** (`SPI_W0..W15`), and 128-bit stores to peripheral
+address space cannot be assumed to work. **GDMA deletes the loop entirely**,
+which is the correct fix rather than vectorising MMIO.
+
 ## 7. Graphics messaging layer
 
 Port of the NeoGPU graphics core (`github.com/anjaustin/neogpu`), ML and GLES
