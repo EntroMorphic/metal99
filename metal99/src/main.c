@@ -45,7 +45,15 @@ void app_entry(void)
     int rc, i;
 
     con_puts("\r\n=== metal99 : elision ===\r\n");
-    (void)clk_set_cpu_pll(160u);
+    /* NOT ignorable. g_cpu_hz only updates on success, so a silent failure
+     * leaves every delay computed for 20 MHz while the core runs at 160 -
+     * including the SH8601's 120 ms sleep-out MINIMUM, which would become
+     * 15 ms and make init marginal in a way that looks like a panel fault. */
+    rc = clk_set_cpu_pll(160u);
+    if (rc != CLK_OK) {
+        con_puts("PLL switch FAILED rc="); con_dec((int32_t)rc);
+        con_puts(" - staying at 20 MHz (delays remain correct)\r\n");
+    }
     spi2_init();
     gdma_init();
     (void)spi2_set_clock(40u);
@@ -150,10 +158,15 @@ void app_entry(void)
          * count it as a miss rather than silently drifting. */
         if ((cpu_cycles() - next) < period) {
             while ((cpu_cycles() - next) < period) { }
+            next += period;
         } else {
+            /* Overran. Re-base rather than advancing by one period: persistent
+             * lateness would otherwise accumulate without bound, and once it
+             * passed 2^31 cycles (13.4 s at 160 MHz) the unsigned comparison
+             * inverts and pacing silently stops working. */
             late++;
+            next = cpu_cycles();
         }
-        next += period;
 
         /* Trace the first frames: what did we mark, what got sent? */
         if (i < 6) {

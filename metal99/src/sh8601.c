@@ -20,14 +20,16 @@ int sh8601_cmd(uint8_t cmd, const uint8_t *params, uint32_t n)
     /* Command word on one line. Hold CS if parameters follow, because the
      * panel treats a CS rise as end-of-command. */
     rc = spi2_xfer(word, 4u, 0, (n > 0u) ? 1 : 0);
-    if (rc != SPI2_OK) return rc;
+    if (rc != SPI2_OK) { spi2_cs_release(); return rc; }
 
     if (n > 0u) {
-        if (params == NULL) return SPI2_E_NULL;
+        /* CS is held here. Every exit below MUST release it or the panel stays
+         * selected and swallows the next command word as pixel data. */
+        if (params == NULL) { spi2_cs_release(); return SPI2_E_NULL; }
         /* Parameters are one-line for opcode 0x02. spi2_write releases CS on
          * its final chunk, which ends the command. */
         rc = spi2_write(params, n, 0);
-        if (rc != SPI2_OK) return rc;
+        if (rc != SPI2_OK) { spi2_cs_release(); return rc; }
     }
     return SPI2_OK;
 }
@@ -161,7 +163,8 @@ int sh8601_write_span(uint16_t y0, uint16_t y1, void (*rowfn)(uint16_t *row, int
 
     word[0] = OPCODE_PIXEL; word[1] = 0x00u; word[2] = 0x2Cu; word[3] = 0x00u;
     rc = spi2_xfer(word, 4u, 0, 1);
-    if (rc != SPI2_OK) return rc;
+    if (rc != SPI2_OK) { spi2_cs_release(); return rc; }
+    /* CS is now held until the final row. EVERY exit below releases it. */
 
     g_stats.render_cycles = 0u;
     g_stats.flush_cycles  = 0u;
@@ -181,7 +184,7 @@ int sh8601_write_span(uint16_t y0, uint16_t y1, void (*rowfn)(uint16_t *row, int
             rc = stream((const uint8_t *)one, (uint32_t)SH8601_WIDTH * 2u,
                         (y == (int)y1));
             g_stats.flush_cycles += cpu_cycles() - t_mark;
-            if (rc != SPI2_OK) return rc;
+            if (rc != SPI2_OK) { spi2_cs_release(); return rc; }
             g_stats.bytes += (uint32_t)SH8601_WIDTH * 2u;
         }
         g_stats.total_cycles = cpu_cycles() - t_frame;
@@ -206,7 +209,7 @@ int sh8601_write_span(uint16_t y0, uint16_t y1, void (*rowfn)(uint16_t *row, int
             t_mark = cpu_cycles();
             rc = spi2_dma_finish();
             g_stats.flush_cycles += cpu_cycles() - t_mark;
-            if (rc != SPI2_OK) return rc;
+            if (rc != SPI2_OK) { spi2_cs_release(); return rc; }
             g_stats.bytes += (uint32_t)pend_rows * SH8601_WIDTH * 2u;
         }
 
@@ -215,7 +218,7 @@ int sh8601_write_span(uint16_t y0, uint16_t y1, void (*rowfn)(uint16_t *row, int
         rc = spi2_dma_start(g_chain[b], (uint32_t)rows * SH8601_WIDTH * 2u,
                             1 /* quad */, (y + rows > (int)y1) ? 0 : 1);
         g_stats.flush_cycles += cpu_cycles() - t_mark;
-        if (rc != SPI2_OK) return rc;
+        if (rc != SPI2_OK) { spi2_cs_release(); return rc; }
 
         pending = 1; pend_rows = rows;
 
@@ -225,7 +228,7 @@ int sh8601_write_span(uint16_t y0, uint16_t y1, void (*rowfn)(uint16_t *row, int
             t_mark = cpu_cycles();
             rc = spi2_dma_finish();
             g_stats.flush_cycles += cpu_cycles() - t_mark;
-            if (rc != SPI2_OK) return rc;
+            if (rc != SPI2_OK) { spi2_cs_release(); return rc; }
             g_stats.bytes += (uint32_t)rows * SH8601_WIDTH * 2u;
             pending = 0;
         }
@@ -238,7 +241,7 @@ int sh8601_write_span(uint16_t y0, uint16_t y1, void (*rowfn)(uint16_t *row, int
         t_mark = cpu_cycles();
         rc = spi2_dma_finish();
         g_stats.flush_cycles += cpu_cycles() - t_mark;
-        if (rc != SPI2_OK) return rc;
+        if (rc != SPI2_OK) { spi2_cs_release(); return rc; }
         g_stats.bytes += (uint32_t)pend_rows * SH8601_WIDTH * 2u;
     }
     (void)total;

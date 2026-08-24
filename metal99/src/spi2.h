@@ -39,6 +39,17 @@
  */
 int spi2_set_clock(uint32_t mhz);
 
+/*
+ * Force CS high, transmitting nothing.
+ *
+ * Needed because CS_KEEP_ACTIVE holds CS asserted until a transaction runs
+ * WITHOUT it - so an error return in the middle of a held-CS stream leaves the
+ * panel selected indefinitely, and the next command word is then swallowed as
+ * pixel data. This takes the pin to plain GPIO, drives it high, and hands it
+ * back to SPI2, so no bytes reach the panel.
+ */
+void spi2_cs_release(void);
+
 /* Clock-gate, reset, route pins through the GPIO matrix, configure mode 0. */
 void spi2_init(void);
 

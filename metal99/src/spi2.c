@@ -323,3 +323,15 @@ int spi2_set_clock(uint32_t mhz)
     SPI_CLOCK    = (1u << 31);            /* CLK_EQU_SYSCLK: no division     */
     return spi2_sync();
 }
+
+#define SIG_GPIO_OUT   256u                    /* SIG_GPIO_OUT_IDX on ESP32-S3 */
+#define GPIO_OUT_W1TS_ REG32(0x60004008u)
+
+void spi2_cs_release(void)
+{
+    GPIO_OUT_W1TS_ = (1u << PIN_CS);           /* park HIGH  = deselected */
+    GPIO_FUNC_OUT_SEL(PIN_CS) = SIG_GPIO_OUT;  /* off the peripheral      */
+    GPIO_FUNC_OUT_SEL(PIN_CS) = SIG_FSPICS0;   /* back to SPI2            */
+    SPI_MISC = MISC_CS1_DIS | MISC_CS2_DIS;    /* clear CS_KEEP_ACTIVE    */
+    (void)spi2_sync();
+}
