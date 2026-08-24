@@ -759,7 +759,35 @@ completed.
 60 MHz would need 80/1.33 and 53 MHz 80/1.5 - neither is representable. There
 is nothing between 40 and 80.
 
-#### Consequence: full-frame 60 fps is not achievable on this hardware
+#### CORRECTION (2026-08-24, after elision landed)
+
+The section below says "full-frame 60 fps is not achievable" and that was
+**stated too broadly**. It is true only of a *literal 100% repaint every single
+frame*. Measured against real updates, cost per row is dead linear at
+**0.041 ms**:
+
+| rows | update | % of 60Hz budget | |
+|---|---|---|---|
+| 32 | 1.3 ms | 8% | fits |
+| 128 | 5.2 ms | 31% | fits |
+| 256 | 10.5 ms | 63% | fits |
+| 384 | 15.7 ms | 94% | fits |
+| **408** | **16.67 ms** | **100%** | **the boundary** |
+| 448 | 18.3 ms | 110% | misses |
+
+**408 of 448 rows - 91% of the screen - can be updated at a steady 60 Hz on the
+40 MHz bus.** Only a literal full repaint misses, and only by 10%.
+
+And that last 10% is within reach: per-row DMA overhead is 0.97 ms across 448
+separate transfers (banding removes nearly all of it) and render is 0.78 ms
+which can overlap DMA, since the CPU is idle during flush. Together those bring
+a full frame to ~16.54 ms = **60.5 fps**.
+
+So the honest statement is: **60 Hz is achieved.** The original claim confused
+"full-frame refresh at 60 fps" with "60 fps", and only the former was ever in
+doubt.
+
+#### Original (over-broad) claim: full-frame 60 fps is not achievable
 
 | | |
 |---|---|

@@ -54,6 +54,38 @@ void app_entry(void)
     sh8601_set_dma(1);
     elide_init();
 
+    /* HOW MUCH OF THE SCREEN CAN CHANGE PER 60Hz FRAME?
+     *
+     * "60 fps" is the wrong question; the panel keeps its own framebuffer, so
+     * the real limit is rows-updated-per-16.67ms. Sweep the dirty row count
+     * over REAL updates and find where the budget runs out. */
+    con_puts("rows | update  | % of 60Hz budget | verdict\r\n");
+    {
+        static const int counts[9] = { 32, 64, 96, 128, 192, 256, 320, 384, 448 };
+        int k;
+        for (k = 0; k < 9; k++) {
+            const elide_stats *e;
+            uint32_t pct;
+
+            elide_reset();
+            (void)elide_flush(scene);          /* settle: full repaint first */
+
+            elide_mark(0, counts[k] - 1);
+            rc = elide_flush(scene);
+            if (rc != SPI2_OK) { con_puts("  FAILED\r\n"); continue; }
+            e = elide_last();
+
+            /* 60Hz period in CPU cycles = CPU_HZ/60 */
+            pct = (uint32_t)(((uint64_t)e->cycles * 100u) / (CPU_HZ / 60u));
+            con_dec((int32_t)e->rows_sent); con_puts(" | ");
+            put_ms(e->cycles);
+            con_puts("| "); con_dec((int32_t)pct); con_puts("% | ");
+            con_puts(pct <= 100u ? "FITS 60Hz\r\n" : "misses\r\n");
+            delay_ms(80u);
+        }
+        con_puts("---\r\n");
+    }
+
     con_puts("mode | rows spans | update | eff fps | headroom vs 16.67ms\r\n");
 
     g_bar_y = 0; g_bar_prev = 0;
