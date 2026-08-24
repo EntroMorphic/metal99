@@ -144,6 +144,12 @@ Both regions stay below `0x3FCE9700`, which the ROM uses for its own stack.
 
 ## 4. Performance budget
 
+> **PROVENANCE WARNING.** The table below was measured on the **ESP-IDF
+> transport** (DMA + PSRAM framebuffer + bounce buffer). metal99 uses none of
+> those. These are not metal99 targets and must not be quoted as our ceiling -
+> doing exactly that produced the "~35 fps" error corrected in §4.4.
+> **A number without its transport is not data.**
+
 Measured on this hardware with the ESP-IDF-based `bare_metal_fb` build
 (`-O2`, 368x448 RGB565, band flush, no FreeRTOS). These numbers set the targets
 metal99 must meet or beat.
@@ -190,6 +196,29 @@ currently runs the CPU **12x slower**. Consequences:
 
 Enabling the PLL therefore moves from "nice later" to **a prerequisite for
 Milestone 4**. It is not needed for Milestone 2, which is about correctness.
+
+### 4.4 CORRECTION: the real ceiling is 60.6 fps, not 35
+
+Earlier text claimed a "~35 fps ceiling after GDMA and PLL". **That was wrong.**
+It was imported from the ESP-IDF measurements above, which used a different
+transport. The physical bound for metal99 is arithmetic:
+
+    frame = 368 x 448 x 16 bits = 2,637,824 bits over 4 QSPI lines
+
+    40 MHz SDR : 160 Mb/s -> 16.49 ms -> **60.6 fps**
+    80 MHz SDR : 320 Mb/s ->  8.24 ms -> 121 fps
+    80 MHz DDR : 640 Mb/s ->  4.12 ms -> 243 fps
+
+Today's 3.2 fps is **94.7% per-transaction overhead**, not physics - the FIFO
+path was chosen to isolate protocol bugs from DMA bugs and it did that job.
+
+Note `SOC_SPI_SUPPORT_DDRCLK = 1`: this silicon does double-data-rate SPI.
+Whether the SH8601 accepts it is unknown and cheap to test.
+
+**Full-frame fps is also the wrong metric.** See `docs/lmm/framerate_synth.md`.
+A 32x32 region update costs ~102 us at 40 MHz, i.e. ~10,000 updates/sec, using
+the `0x2A`/`0x2B` address window we already have and have been using only to say
+"the whole screen".
 
 ### 4.2 Known-bad path
 
