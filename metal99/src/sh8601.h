@@ -56,4 +56,19 @@ int sh8601_sleep(void);
 int sh8601_scroll_def(uint16_t tfa, uint16_t vsa, uint16_t bfa);
 int sh8601_scroll_start(uint16_t row);
 
+/*
+ * Telemetry from the REAL workload - no synthetic probe traffic. Populated by
+ * sh8601_write_frame(); read after each frame. Measuring the actual work is
+ * both more honest and structurally incapable of corrupting the panel, which
+ * synthetic probing did.
+ */
+typedef struct {
+    uint32_t render_cycles;   /* time inside the caller's rowfn        */
+    uint32_t flush_cycles;    /* time pushing bytes to the panel       */
+    uint32_t total_cycles;    /* whole frame, including command setup  */
+    uint32_t bytes;           /* pixel bytes actually transmitted      */
+} sh8601_stats;
+
+const sh8601_stats *sh8601_last_frame(void);
+
 #endif /* SH8601_PANEL_H */

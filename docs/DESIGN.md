@@ -687,6 +687,52 @@ writes) stands alone - but the sentence overstated what we know.
 to 201 cycles, about 4%. The safety fix perturbs the measuring instrument. True
 bus rate is still 40 MHz.
 
+### 6.6g Streaming telemetry - measure the workload, never probe it
+
+**No synthetic probe traffic.** `sh8601_write_frame()` is instrumented and
+streams per-frame statistics over the console. Everything reported is derived
+from work that actually happened.
+
+This is not only cleaner, it makes R5 structurally impossible: there is no test
+traffic to accidentally aim at the panel. The probe hooks
+(`spi2_set_src_and_div`, `spi2_cs_detach/attach`) have been deleted.
+
+```
+ grad | render 6.72ms  flush 82.20ms  total 89.83ms | 3584 kB/s | 20% | 11.1 fps
+ bars | render 6.27ms  flush 82.20ms  total 89.38ms | 3602 kB/s | 20% | 11.1 fps
+```
+
+| Component | Time | Share |
+|---|---|---|
+| Render (vectorised) | 6.3-6.7 ms | **7%** |
+| Flush | **82.20 ms** | **92%** |
+| Command setup | ~0.9 ms | 1% |
+
+Three things this shows that a single frame-time number could not:
+
+1. **Vectorisation effectively removed rendering from the budget.** Per-pixel
+   generation is now 7% of the frame. Bars and gradient differ by 0.45 ms.
+2. **Flush is 82.20 ms for BOTH frames, identical to the hundredth.** Transfer
+   cost is completely independent of content - exactly what you expect when the
+   bottleneck is per-transaction overhead rather than data.
+3. **Wire utilisation is 20%.** Of 82.20 ms of flush, only 16.49 ms is time on
+   the wire. **80% of flush is per-transaction setup**, across 5,152 FIFO
+   transactions.
+
+#### The safety guards cost ~8% of flush
+
+Flush measured ~76 ms before the R2 spin guards and 82.20 ms after: **+8%**. The
+guard adds a compare-and-increment inside the `CMD_USR` poll loop, which runs
+5,152 times per frame with several poll iterations each.
+
+That is a real price for not hanging, and it is worth paying - but it should be
+recorded rather than absorbed silently. **GDMA deletes the polling loop
+entirely**, so the cost disappears with the same change that removes the
+overhead it is measuring.
+
+*(Attribution is inference from the arithmetic and timing, not an isolated
+experiment - flagged as such rather than asserted.)*
+
 ### 6.7 Transfer path: CPU FIFO first
 
 Milestone 2 uses the **64-byte CPU FIFO** (`SPI_W0..W15`), not DMA.

@@ -76,9 +76,15 @@ static int stream(const uint8_t *d, uint32_t n, int final_row)
     return SPI2_OK;
 }
 
+static sh8601_stats g_stats;
+
+const sh8601_stats *sh8601_last_frame(void) { return &g_stats; }
+
 int sh8601_write_frame(void (*rowfn)(uint16_t *row, int y))
 {
-    static uint16_t row[SH8601_WIDTH];
+    static uint16_t VEC_ALIGN row[SH8601_WIDTH];
+    uint32_t t_frame = cpu_cycles();
+    uint32_t t_mark;
     uint8_t VEC_ALIGN word[16];
     int rc, y;
 
@@ -92,12 +98,23 @@ int sh8601_write_frame(void (*rowfn)(uint16_t *row, int y))
     rc = spi2_xfer(word, 4u, 0 /* command is one-line */, 1 /* hold CS */);
     if (rc != SPI2_OK) return rc;
 
+    g_stats.render_cycles = 0u;
+    g_stats.flush_cycles  = 0u;
+    g_stats.bytes         = 0u;
+
     for (y = 0; y < SH8601_HEIGHT; y++) {
+        t_mark = cpu_cycles();
         rowfn(row, y);
+        g_stats.render_cycles += cpu_cycles() - t_mark;
+
+        t_mark = cpu_cycles();
         rc = stream((const uint8_t *)row, (uint32_t)SH8601_WIDTH * 2u,
                     (y == SH8601_HEIGHT - 1));
+        g_stats.flush_cycles += cpu_cycles() - t_mark;
         if (rc != SPI2_OK) return rc;
+        g_stats.bytes += (uint32_t)SH8601_WIDTH * 2u;
     }
+    g_stats.total_cycles = cpu_cycles() - t_frame;
     return SPI2_OK;
 }
 
