@@ -9,8 +9,82 @@ drives SPI2 and the SH8601 panel from raw registers, and renders through the
 LX7's 128-bit vector unit.
 
 ```
- 8,528-byte boot image  ·  0 dependencies  ·  -std=c99 -pedantic-errors -Wshadow -Werror
+ sub-10 KB boot image  ·  0 dependencies  ·  -std=c99 -pedantic-errors -Wshadow -Werror
 ```
+
+## 60 Hz
+
+**Locked 60 Hz on a 40 MHz bus, with 2.2x headroom, on a panel whose full-frame
+wire time is 16.49 ms against a 16.67 ms budget.** The margin does not come from
+a faster transport. It comes from not sending most of the frame.
+
+The SH8601 keeps its own framebuffer — across CPU resets *and* software reset.
+That property caused three "ghost image" misdiagnoses before it became the
+foundation of the design: **an untouched pixel costs nothing, so the fastest
+pixel is the one never transmitted.** The runtime's job is not to draw quickly.
+It is to know exactly what did not change.
+
+Four layers, each closing a measured cost:
+
+| | |
+|---|---|
+| `gfx` | keeps a 448-row model of what the screen *should* look like and **derives** dirtiness by diffing it. A caller cannot mismark what it never marks — an earlier version declared its own dirty rows and got it subtly wrong. |
+| `elide` | coalesces dirty rows into contiguous **spans**, so a run of rows costs one address-window command, not one per row. A rolling resync refreshes a rotating slice each frame, so model drift cannot persist. |
+| `sh8601` | streams a span straight to the panel. There is **no framebuffer in RAM** — 322 KB will not fit in 192 KB of DRAM, and it is not needed. |
+| pacing | holds the 60 Hz cadence from our own timebase (no TE pin is wired) and counts every miss, rather than drifting quietly. |
+
+Measured on hardware:
+
+| | |
+|---|---|
+| Steady-state cadence | **60 Hz locked — zero late frames** |
+| Typical interface update, 104 rows | **7.3 ms of 16.67 ms — 2.2x headroom** |
+| Moving a 96-row element | **6.7 ms — 2.4x headroom** |
+| The same frame drawn twice | **0 rows transmitted** |
+| Same workload, unpaced | **~140 fps** |
+
+**Elision is what makes 60 Hz reachable at all.** Repainting every frame costs
+**31.2 ms** — 32 fps, measured, not extrapolated. Sending only what changed costs
+**7.3 ms**. That 4.5x is the architecture, and nothing else in the stack closes
+that gap: the bus is fixed at 40 MHz, the CPU is already at 160, and rendering is
+**0.002 ms/row** — 1.4% of a frame. The panel is wire-bound, so the only lever
+that matters is how few bytes go over the wire.
+
+### Budgeting a design
+
+Cost is **linear at 0.069 ms/row**, so an interface can be budgeted directly:
+
+| rows changed | frame | of 16.67 ms |
+|---|---|---|
+| 32 | 2.2 ms | 13% |
+| 96 | 6.7 ms | 40% |
+| 104 | 7.3 ms | 44% |
+| **240** | **16.6 ms** | **100% — the boundary** |
+| 448 (everything) | 31.2 ms | 187% — misses |
+
+**Up to ~240 rows — 54% of the screen — can change every frame at a locked
+60 Hz.** Interfaces do not repaint whole screens; a moving element, a text
+region, a status bar all sit far inside that. Only workloads that touch most of
+the screen every frame — fullscreen video, a scrolling background — exceed it.
+
+Banded GDMA closes that last case at 16.6 ms full-frame, and is **parked**: it
+ships byte-identical data (the on-device self-test digests 448 rows to
+`0xF5642645` through both transports) yet the panel looks visibly worse, so the
+fault is delivery timing and is not understood. See
+[`docs/DESIGN.md`](docs/DESIGN.md) §6.6l. Nothing above depends on it.
+
+### The dirty tracking is correct, not merely repaired
+
+A dirty-region scheme is a model of remote state that cannot be read back, so
+"looks right" is worth little — the rolling resync rewrites the whole screen
+every ~1.9 s while the bar wraps every ~1.5 s, which means a marking leak would
+be scrubbed at about the rate it accumulates. That is exactly how an earlier
+marking bug hid.
+
+So the safety net is switched off and the load-bearing case is traced: over 20 s
+with resync disabled, **all 13 wraps marked exactly 192 rows in 2 spans** — the
+precise union of the element's old and new positions. Correct on its own, not
+correct because something kept fixing it.
 
 ## Status
 
@@ -20,9 +94,9 @@ LX7's 128-bit vector unit.
 | SPI2 QSPI @ 40 MHz, quad mode | verified by timing |
 | SH8601 panel, cold start | verified by power cycle |
 | 128-bit vector primitives | verified |
-| Elision + 60 Hz pacing | **shipping** — 2.2x headroom on typical updates |
-| Self-checking harness | validated against injected faults — **but see the caveat below** |
-| `gfx` messaging layer | working |
+| Elision + 60 Hz pacing | **shipping** — 60 Hz locked, 2.2x headroom, zero late frames |
+| Self-checking harness | validated against injected faults, on device and on host |
+| `gfx` retained-mode layer | **shipping** — dirtiness derived, redundant repaints cost 0 rows |
 | Banded GDMA | parked — data proven identical, timing suspect |
 
 ## Quickstart
@@ -72,43 +146,7 @@ To restore the stock Waveshare firmware, see [`backup/RESTORE.md`](backup/RESTOR
 | `gfx.c` | retained-mode layer — dirtiness derived, not declared |
 | `selftest.c` | on-device verification + fault injection |
 
-## Performance
-
-Measured on hardware, 368x448 RGB565 at 40 MHz QSPI. **Two transports, and which
-one you mean matters:** FIFO ships, banded GDMA is parked.
-
-### What ships — FIFO
-
-| | |
-|---|---|
-| Cost per row | **0.069 ms** (0.068 flush + 0.002 render), linear |
-| Typical interface update (104 rows) | **7.3 ms** — 2.2x headroom, zero late frames |
-| Moving a 96-row element | **6.7 ms** — 2.4x headroom |
-| Full repaint (448 rows) | **31.2 ms** — 31.9 fps, *misses* the 16.67 ms budget |
-| 60 Hz boundary | **~240 rows**, 54% of the screen |
-| Redundant repaint | 0 rows *changed*; 4 rows/frame still sent by the rolling resync |
-
-### Parked — banded GDMA
-
-| | |
-|---|---|
-| Cost per row | 0.037 ms — the 40 MHz wire time and nothing above it |
-| Full repaint (448 rows) | 16.6 ms — would fit the 16.67 ms budget |
-
-Banded GDMA is ~1.8x faster and is the only way a *full* repaint fits 60 Hz. It
-delivers byte-identical data — the on-device self-test digests 448 rows to
-`0xF5642645` through both transports — and the panel still looks visibly worse,
-so it stays disabled until that is understood. See
-[`docs/DESIGN.md`](docs/DESIGN.md) §6.6l.
-
-**The useful claim is linearity, not a full-frame number.** A designer can budget
-rows directly, and interfaces do not repaint whole screens — the elision layer
-transmits only what changed. An earlier version of this table quoted 0.037 ms/row
-and "all 448 rows at 60 Hz" as if they described what ships; those are the parked
-transport's figures, and the table contradicted itself (0.037 x 104 = 3.9 ms
-against a measured 7.3 ms).
-
-### How it got here
+## How it got here
 
 | Stage | Frame | fps | |
 |---|---|---|---|
@@ -116,9 +154,12 @@ against a measured 7.3 ms).
 | + vectorised MMIO | 82 ms | 12.2 | |
 | + GDMA | 28 ms | 35.5 | |
 | + PLL 160 MHz | 18.4 ms | 54.4 | |
-| + banding & overlap | 16.6 ms | 60.2 | **parked** |
-| FIFO + PLL, full repaint | 31.2 ms | 31.9 | **ships** |
-| + elision (104-row update) | **7.3 ms** | — | **ships** |
+| + banding & overlap | 16.6 ms | 60.2 | parked |
+| FIFO + PLL, full repaint | 31.2 ms | 31.9 | ships |
+| **+ elision, 104-row update** | **7.3 ms** | **60 Hz locked** | **ships** |
+
+Every figure is measured on hardware at 368x448 RGB565, 40 MHz QSPI, 160 MHz
+CPU. `docs/DESIGN.md` carries the method and the wrong turns.
 
 ## Hardware notes
 

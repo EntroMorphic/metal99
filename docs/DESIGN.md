@@ -95,27 +95,72 @@ version first.
 
 ## 3. Architecture
 
+### 3.0 The 60 Hz thesis
+
+**The panel is wire-bound, so the only lever that matters is how few bytes go
+over the wire.**
+
+Everything else is fixed or already spent. The bus tops out at 40 MHz (6.6h),
+which puts full-frame wire time at 16.49 ms against a 16.67 ms budget - 99% of
+the period gone before a single command byte. The CPU is at 160 MHz, the top of
+its useful range for this workload. Rendering costs **0.002 ms/row**, 1.4% of a
+frame; making it free would buy nothing.
+
+What is *not* fixed is how much of the frame gets sent. The SH8601 keeps its own
+framebuffer across CPU resets and software reset - the property that caused
+three ghost-image misdiagnoses (6.6d) before it became the design's foundation.
+An untouched pixel costs nothing. So:
+
+> The runtime's job is not to draw quickly. It is to know exactly what did not
+> change, and to send nothing else.
+
+Measured, that is the difference between 31.2 ms per frame (repaint everything,
+32 fps) and 7.3 ms (send only what changed, 60 Hz locked with 2.2x headroom).
+**4.5x, and no other layer in the stack closes that gap.**
+
+The corollary sets the design budget: cost is linear at 0.069 ms/row, so **up to
+~240 rows - 54% of the screen - can change every frame at a locked 60 Hz.**
+Interfaces sit far inside that. Only workloads touching most of the screen every
+frame exceed it, and those are what banded DMA (6.6j, parked in 6.6l) exists for.
+
+### 3.0a Layers
+
 ```
 +-------------------------------------------------------------+
-|  application  (pure C99, portable, host-testable)           |
-|    render_c99.c : rasterizers, LUTs, palette                |
+|  scene / application   (pure C99, portable, host-testable)  |
+|    a rowfn: given y, fill one row                           |
 +-------------------------------------------------------------+
-|  graphics messaging layer  (NeoGPU port, §7)                |
-|    opcode stream -> channels -> frame begin/end/present     |
-|    HSBackendOps vtable                                       |
+|  gfx.c      retained model of all 448 rows                  |
+|             DERIVES dirtiness by diffing; never declared    |
 +-------------------------------------------------------------+
-|  hs_backend_sh8601.c   <-- Milestone 2 delivers this        |
+|  elide.c    dirty rows -> coalesced spans; rolling resync   |
 +-------------------------------------------------------------+
-|  metal99 platform  (§6)                                      |
-|    start.c  wdt.c  io.c  spi2.c  gdma.c                     |
+|  sh8601.c   address window, span writes, QSPI framing       |
++-------------------------------------------------------------+
+|  spi2.c  gdma.c   transport + transmit ledger               |
++-------------------------------------------------------------+
+|  metal99 platform   start.c wdt.c clk.c io.c vec.c fold.c   |
 +-------------------------------------------------------------+
 |  ESP32-S3 silicon                                            |
 +-------------------------------------------------------------+
 ```
 
-Layers above `hs_backend_sh8601.c` contain **no register access**. Layers below
-contain **no rendering logic**. That boundary is what keeps `render_c99.c`
-compiling and running unchanged on a Linux host.
+Layers above `sh8601.c` contain **no register access**. Layers below contain
+**no rendering logic**. That boundary is what lets a rowfn compile and run
+unchanged on a Linux host (`tests/host/`), and it is why the digest lives in its
+own `fold.c` - the host builds the firmware's instrument rather than a copy.
+
+`vec.c` is cross-cutting by necessity: the no-scalar rule (6.9) applies at every
+layer that touches bulk data.
+
+> **CORRECTION (2026-08-24).** This section previously diagrammed a NeoGPU port
+> - `hs_backend_sh8601.c`, an `HSBackendOps` vtable, an opcode stream, and a
+> `render_c99.c` application layer. None of those exist. That was the Milestone-2
+> *plan* (§7), and what actually shipped is `gfx.c`: 101 lines keeping a 448-row
+> descriptor model, because there is no framebuffer to replay a command list
+> into and 322 KB will not fit in 192 KB of DRAM. The diagram was never updated
+> when the plan changed, so this document described an architecture the code had
+> not had for some time.
 
 ### 3.1 Boot model
 
@@ -1132,6 +1177,23 @@ transmitted, so the padding is never sent.
 it is now an optimisation rather than a rescue.
 
 ## 7. Graphics messaging layer
+
+> **SUPERSEDED (2026-08-24) — kept as the reasoning, not the design.**
+>
+> This section specifies a NeoGPU port: an opcode stream, channels, an
+> `HSBackendOps` vtable and an `hs_backend_sh8601.c` implementing it. **None of
+> that shipped.** What shipped is `gfx.c`, 101 lines keeping a 448-row
+> descriptor model and diffing it.
+>
+> The reason is in §7.4 and worth stating plainly: a command-list backend
+> replays into a framebuffer, and there is no framebuffer — 322 KB will not fit
+> in 192 KB of DRAM, and rows stream straight to the panel. So the layer that
+> was specified as "opcodes in, pixels out" became "what should each row look
+> like, and which of those changed". That inversion is the whole 60 Hz
+> architecture (§3.0); the vtable would have been machinery around it.
+>
+> Read this for *why* the messaging layer exists and what it was measured
+> against. Read §3.0 and `metal99/src/gfx.c` for what it is.
 
 Port of the NeoGPU graphics core (`github.com/anjaustin/neogpu`), ML and GLES
 excluded.
