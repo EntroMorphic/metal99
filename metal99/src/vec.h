@@ -44,8 +44,21 @@
 #define VEC_Q_STEP   "q5"    /* vec_ramp16  per-vector increment     */
 #define VEC_Q_XORD   "q6"    /* vec_xor16   destination chunk        */
 #define VEC_Q_XORS   "q7"    /* vec_xor16   source chunk             */
-/* All eight are claimed. A new owner must share one, and sharing requires
- * proving the two never interleave - they are not saved or restored. */
+/* All eight are claimed above. A new owner must SHARE, and sharing requires
+ * proving the two never interleave - these registers are not saved or restored.
+ *
+ * vec_glyph_row is the first sharer, and the proof is structural: this unit is
+ * single-threaded, takes no interrupts, and no vec_* function calls another.
+ * The one pairing worth naming is q3, shared with the SPI2 FIFO load -
+ * sh8601_write_span_x renders a whole row and only then streams it, so the
+ * glyph blit has finished before the FIFO load begins. */
+#define VEC_Q_GBITS  VEC_Q_FILL   /* q0  broadcast glyph byte        */
+#define VEC_Q_GLANE  VEC_Q_COPY   /* q1  {0x80,0x40,...,0x01}        */
+#define VEC_Q_GZERO  VEC_Q_ZERO   /* q2  zero, for the compare       */
+#define VEC_Q_GSEL   VEC_Q_FIFO   /* q3  ones where the bit is CLEAR */
+#define VEC_Q_GTMP   VEC_Q_RAMP   /* q4  inverted mask / scratch     */
+#define VEC_Q_GFG    VEC_Q_STEP   /* q5  broadcast foreground colour */
+#define VEC_Q_GDST   VEC_Q_XORD   /* q6  destination pixels          */
 
 #define VEC_ALIGN __attribute__((aligned(16)))
 #define VEC_BYTES 16
@@ -83,6 +96,26 @@ void vec_ramp16(uint16_t *dst, uint16_t start, uint16_t step, uint32_t vectors);
 
 /* dst ^= src, 16-bit lanes. */
 void vec_xor16(uint16_t *dst, const uint16_t *src, uint32_t vectors);
+
+/*
+ * GLYPH BLIT - 1bpp bits to RGB565 pixels, 8 per instruction group.
+ *
+ * Each byte of `bits` paints 8 pixels: a set bit takes `fg`, a CLEAR bit leaves
+ * the destination untouched. Transparent rather than opaque, so text composes
+ * over whatever the run model already drew - and it costs nothing extra,
+ * because the mask needed to select fg is the same mask needed to keep dst.
+ *
+ * MSB first: bit 7 is the leftmost pixel, matching font.h's layout, so nothing
+ * is reversed at run time.
+ *
+ * `dst` must be 16-byte aligned - true when glyphs sit on the 8px grid, which
+ * gfx enforces. Measured at 1.375 instructions per pixel against 9.0 scalar
+ * (DESIGN.md 6.9a); this is the shape the PIE unit is best at, since the
+ * compare-and-select it needs is exactly what the ISA provides in place of the
+ * table lookup it does not (6.9b).
+ */
+void vec_glyph_row(uint16_t *dst, const uint8_t *bits, uint32_t bytes,
+                   uint16_t fg);
 
 /*
  * CONTENT DIGEST - folds EVERY byte, not a sample.

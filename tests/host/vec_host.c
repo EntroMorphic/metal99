@@ -74,3 +74,13 @@ void vec_xor16(uint16_t *dst, const uint16_t *src, uint32_t vectors)
     uint32_t n = vectors * (VEC_BYTES / 2u), i;
     for (i = 0u; i < n; i++) dst[i] = (uint16_t)(dst[i] ^ src[i]);
 }
+
+/* Scalar mirror of the device blit: set bit -> fg, clear bit -> leave dst. */
+void vec_glyph_row(uint16_t *dst, const uint8_t *bits, uint32_t bytes,
+                   uint16_t fg)
+{
+    uint32_t i, b;
+    for (i = 0u; i < bytes; i++)
+        for (b = 0u; b < 8u; b++)
+            if (bits[i] & (0x80u >> b)) dst[i * 8u + b] = fg;
+}

@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "gfx.h"
+#include "font.h"
 #include "gfx_stubs.h"
 
 #define W SH8601_WIDTH
@@ -222,6 +223,97 @@ int main(void)
         (void)gfx_present();
         check(marked(54, &a, &b), "a row at the run cap still diffs and marks");
         check(band_is(54, 0, W - 1, C3), "  and renders correctly afterwards");
+    }
+
+    /* ---- 13. TEXT ---- */
+    {
+        const gfx_font *F = &share_mono_8x16;
+        int a, b, y, ok, r, c;
+
+        /* Glyph bits reach the panel in the right places. Compared against the
+         * font data itself rather than a hand-copied pattern, so the test
+         * cannot drift from the generator. */
+        gfx_solid(0, 447, BG);
+        (void)gfx_text(0, 0, 100, "A", FG, F);
+        (void)gfx_present();
+        ok = 1;
+        for (r = 0; r < (int)F->h; r++) {
+            uint8_t bits = F->bits[(('A' - F->first) * F->h) + r];
+            stub_render(100 + r, g_row);
+            for (c = 0; c < 8; c++) {
+                uint16_t want = (bits & (0x80u >> c)) ? FG : BG;
+                if (g_row[c] != want) ok = 0;
+            }
+        }
+        check(ok, "a glyph renders exactly the font's bits");
+
+        /* Transparent: clear bits keep whatever the runs drew. */
+        gfx_solid(0, 447, BG);
+        (void)gfx_rect(0, 100, 63, 115, C3);
+        (void)gfx_text(0, 0, 100, "A", FG, F);
+        (void)gfx_present();
+        {
+            uint8_t bits = F->bits[('A' - F->first) * F->h + 1];
+            stub_render(101, g_row);
+            ok = 1;
+            for (c = 0; c < 8; c++)
+                if (g_row[c] != ((bits & (0x80u >> c)) ? FG : C3)) ok = 0;
+        }
+        check(ok, "clear glyph bits keep the background beneath");
+
+        /* Identical text is elided. */
+        stub_reset();
+        check(gfx_text(0, 0, 100, "A", FG, F) == 0,
+              "setting identical text reports no change");
+        (void)gfx_present();
+        check(g_nmarks == 0, "  and transmits nothing");
+
+        /* A changed string marks the label's rectangle, and only that. */
+        stub_reset();
+        (void)gfx_text(0, 0, 100, "B", FG, F);
+        (void)gfx_present();
+        check(marked(100, &a, &b) && a == 0 && b == 7,
+              "changed text marks only the label's columns");
+        check(!marked(99, &a, &b) && !marked(116, &a, &b),
+              "  and only its rows");
+
+        /* Moving marks old and new. */
+        gfx_solid(0, 447, BG); (void)gfx_present();
+        (void)gfx_text(0, 0, 200, "Hi", FG, F);
+        (void)gfx_present();
+        stub_reset();
+        (void)gfx_text(0, 64, 200, "Hi", FG, F);
+        (void)gfx_present();
+        check(marked(205, &a, &b) && a == 0 && b == 79,
+              "a moved label marks the union of old and new");
+
+        /* Clearing repaints the background where it was. */
+        stub_reset();
+        (void)gfx_text_clear(0);
+        (void)gfx_present();
+        check(marked(205, &a, &b) && a == 64 && b == 79,
+              "clearing a label marks where it was");
+        stub_render(205, g_row);
+        check(g_row[64] == BG && g_row[70] == BG,
+              "  and the row renders as pure background again");
+
+        /* x snaps down to the grid. */
+        gfx_solid(0, 447, BG); (void)gfx_present();
+        (void)gfx_text(1, 13, 300, "A", FG, F);
+        (void)gfx_present();
+        check(marked(300, &a, &b) && a == 8,
+              "label x snaps down to the 8px grid");
+
+        /* Clipped at the right edge rather than overrunning the row. */
+        gfx_solid(0, 447, BG); (void)gfx_present();
+        (void)gfx_text(2, 360, 320, "ABCD", FG, F);
+        (void)gfx_present();
+        stub_render(321, g_row);
+        ok = 1;
+        for (y = 0; y < W; y++) if (y < 360 && g_row[y] != BG) ok = 0;
+        check(ok, "a label running past the edge is clipped, not wrapped");
+
+        gfx_text_clear(1); gfx_text_clear(2); (void)gfx_present();
     }
 
     printf("%s (%d failure%s)\n", g_fails ? "FAILED" : "OK",

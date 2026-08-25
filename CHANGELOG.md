@@ -124,6 +124,37 @@ one continuous run.
   which is part of how the constant-zero return went unnoticed. It now prints
   the return value, so the two disagreeing would be visible.
 
+### Added — text
+- **Labels are described, not rasterised.** A glyph scanline is up to five runs,
+  so a twenty-character line would be a hundred runs in a row that holds eight —
+  text cannot live in the run model. A label is instead a *description*
+  (position, colour, font, string) diffed exactly like a run list, and
+  double-buffered against what the panel holds for the same reason rows are.
+  The string is **copied**, not pointed at: a caller formatting into a reused
+  buffer would otherwise change content without changing the pointer.
+- **The blit is transparent**, so text composes over any background at no extra
+  cost — the mask that selects the foreground is the same mask that keeps the
+  destination. `vec_glyph_row` measured at 1.375 instr/px.
+- **Fonts are rasterised from TrueType at build time** by `tools/mkfont.py`. The
+  device cannot rasterise outlines: no malloc, no libc, no floating point, and
+  scan conversion is irreducibly scalar work that would break §3.0's wire-bound
+  premise. Share Tech Mono, SIL OFL 1.1, TTF sources tracked so the generated
+  table is reproducible.
+
+  | measured on hardware | px/frame |
+  |---|---|
+  | first paint, three labels | 11,200 |
+  | **setting identical text again** | **1,472 — resync only; the text is free** |
+  | updating a 5-digit 16x32 counter | 3,989 |
+  | a full screen, for scale | 164,864 |
+
+  **A static label marks nothing**, so a title on screen throughout leaves the
+  20 s resync-off window and its wrap trace completely unaffected — still 8 rows
+  and 2 spans per frame, still exactly 192 rows at every wrap.
+- 12 more host assertions covering glyph bits against the font data itself,
+  transparency, elision of identical text, move, clear, grid snap and edge
+  clipping. 57 across the suite.
+
 ### Added — a drawing surface
 - **Rows are run lists, and spans are rectangles.** A row was previously one of
   two things: a solid colour, or two colours with one transition — which could

@@ -29,6 +29,7 @@ Four layers, each closing a measured cost:
 | | |
 |---|---|
 | `gfx` | keeps two 448-row models — what the caller described, and what the panel last received — and **derives** dirtiness by diffing them at present time. A caller cannot mismark what it never marks, and cannot make a frame expensive by describing it in an awkward order. Rows are run lists, so rectangles compose. |
+| `text` | labels are **described**, not rasterised into the model — position, colour, font and the string itself, diffed exactly like a run list. Glyphs blit transparently over whatever the runs drew. |
 | `elide` | carries an x-extent per dirty row and coalesces rows into **rectangular spans**, so an update costs its own columns rather than whole rows. A rolling resync refreshes a rotating slice each frame, so model drift cannot persist. |
 | `sh8601` | streams a span straight to the panel. There is **no framebuffer in RAM** — not because 322 KB will not fit (it does), but because storing pixels does not send fewer of them. |
 | pacing | holds the 60 Hz cadence from our own timebase (no TE pin is wired) and counts every miss, rather than drifting quietly. |
@@ -41,6 +42,8 @@ Measured on hardware:
 | Moving a full-width 96-row bar | **8 rows, 2,944 px — 0.6 ms, 26x headroom** |
 | Moving an 88x88 element | **1,968 px — 2% of the budget** |
 | A **stationary** element | **0 rows transmitted** |
+| Text set to the same string again | **0 px** — a static label is free |
+| Updating a 5-digit 16x32 counter | **2,560 px** — 1.6% of a full screen |
 | The same frame drawn twice | **0 rows transmitted** |
 | A change made and reverted before present | **0 rows transmitted** |
 | A full 448-row repaint | 31.2 ms — the one case that misses |
@@ -137,7 +140,8 @@ To restore the stock Waveshare firmware, see [`backup/RESTORE.md`](backup/RESTOR
 |---|---|
 | `metal99/src/` | the firmware — ~2,500 lines |
 | `metal99/build.sh` | gcc + ld + esptool, no build system |
-| `tools/` | research instruments (capture, register lookup, ISA probe) |
+| `tools/` | research instruments (capture, register lookup, ISA probe, font generator) |
+| `tools/fonts/` | TTF sources, so the generated font is reproducible |
 | `tests/host/` | digest assertions + desktop renderers, ~200 ms iteration |
 | `docs/DESIGN.md` | the engineering record — every measurement and trap |
 | `docs/lmm/` | design exploration that produced the plan |
@@ -157,7 +161,8 @@ To restore the stock Waveshare firmware, see [`backup/RESTORE.md`](backup/RESTOR
 | `gdma.c` | GDMA descriptor chains (parked) |
 | `sh8601.c` | panel init, address window, row/span writes |
 | `elide.c` | dirty-row tracking, span coalescing, rolling resync |
-| `gfx.c` | retained-mode layer — dirtiness derived, not declared |
+| `gfx.c` | retained-mode layer — dirtiness derived, not declared; runs, rects and text labels |
+| `font.h` `font_share.c` | 1bpp bitmap fonts, rasterised from TTF at build time |
 | `selftest.c` | on-device verification + fault injection |
 
 ## How it got here
@@ -199,6 +204,28 @@ Other findings, all measured rather than assumed:
 Two non-negotiable rules — pure C99 and no scalar per-element math — plus a
 verification discipline earned the hard way. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Text
+
+Fonts are rasterised from TrueType **at build time** by `tools/mkfont.py`, never
+on the device — a TrueType scan converter wants `malloc`, libc and floating
+point, none of which exist here, and outline filling is irreducibly scalar work
+that would break the wire-bound premise in §3.0. Bits blit at **1.375
+instructions per pixel** measured; outlines would not come close.
+
+```sh
+./tools/mkfont.py --list     # what gets generated
+./tools/mkfont.py            # regenerate metal99/src/font_share.c
+```
+
+Doing it at build time also makes the typeface a choice rather than whatever
+console font happens to be installed. Change the size, the weight or the family
+by editing one table in the generator.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+The bundled bitmap font is derived from **Share Tech Mono**, © The Share Tech
+Mono Project Authors, under the **SIL Open Font License 1.1** — see
+[`tools/fonts/OFL.txt`](tools/fonts/OFL.txt). The TTF sources are tracked in
+`tools/fonts/` so `font_share.c` is reproducible.

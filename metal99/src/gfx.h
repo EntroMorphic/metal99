@@ -52,6 +52,7 @@
 #include <stddef.h>
 #include "sh8601.h"
 #include "vec.h"
+#include "font.h"
 
 /*
  * X GRID. Run boundaries snap to VEC_PIX16 (8 pixels).
@@ -104,6 +105,28 @@ typedef struct {
 typedef char gfx_row_must_be_whole_vectors[
     (sizeof(gfx_row) == (size_t)(GFX_ROW_VECTORS * VEC_BYTES)) ? 1 : -1];
 
+/*
+ * TEXT IS DESCRIBED, NOT RASTERISED INTO THE MODEL.
+ *
+ * A glyph scanline like 0b01100110 is five runs. A line of twenty characters
+ * would be a hundred runs in a row that holds eight, so rasterising text into
+ * the run model is not an option - and punching a "this row is custom, call
+ * back" hole in the model would give up the diffing that the whole layer exists
+ * for.
+ *
+ * So a label is a DESCRIPTION - position, colour, font, and the string itself -
+ * and it is diffed exactly like a run list. The string is COPIED in rather than
+ * pointed at: a caller that formats into a reused buffer would otherwise change
+ * the content without changing the pointer, and the diff would miss it. Owning
+ * the bytes makes the comparison exact instead of a hash that can collide.
+ *
+ * Labels compose OVER the run model. The blit is transparent (vec_glyph_row),
+ * so a label on a background that changes underneath repaints correctly: the
+ * run diff marks the row and the row is re-rendered runs-then-text.
+ */
+#define GFX_MAX_LABELS  8
+#define GFX_LABEL_CHARS 40
+
 typedef struct {
     /*
      * rows_changed counts MODEL WRITES since the last present: a row set twice
@@ -117,6 +140,7 @@ typedef struct {
     uint32_t cycles;
     uint32_t px_sent;        /* pixels transmitted - the figure sub-width moves */
     uint32_t run_overflows;  /* rows that lost a run to the MAX_RUNS cap        */
+    uint32_t labels_changed; /* labels differing from what the panel holds      */
 } gfx_stats;
 
 void gfx_init(void);
@@ -141,6 +165,21 @@ uint32_t gfx_solid(uint16_t y0, uint16_t y1, uint16_t colour);
  * rects whose bounds must agree. --gc-sections drops it when unused. */
 uint32_t gfx_split(uint16_t y0, uint16_t y1, uint16_t left, uint16_t right,
                    uint16_t x);
+
+/*
+ * Place text in slot `id` (0 .. GFX_MAX_LABELS-1).
+ *
+ * x is snapped DOWN to the 8px grid so each glyph lands on a whole vector -
+ * the blit then needs no masking. The string is copied, truncated at
+ * GFX_LABEL_CHARS. A NULL or empty string clears the slot, and so does
+ * gfx_text_clear().
+ *
+ * Returns 1 if the description changed, 0 if it was identical and the call
+ * will therefore transmit nothing.
+ */
+int  gfx_text(int id, uint16_t x, uint16_t y, const char *s,
+              uint16_t fg, const gfx_font *font);
+void gfx_text_clear(int id);
 
 /* Transmit whatever changed. */
 int gfx_present(void);

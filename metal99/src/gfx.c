@@ -27,6 +27,59 @@ static void touch(int y)      { g_touched[(uint32_t)y >> 5] |= 1u << ((uint32_t)
 static int  is_touched(int y) { return (g_touched[(uint32_t)y >> 5] >> ((uint32_t)y & 31u)) & 1u; }
 
 /*
+ * Labels are double-buffered for the same reason rows are: the diff has to be
+ * against what the PANEL holds, not against the description in flight.
+ */
+typedef struct {
+    const gfx_font *font;
+    uint16_t x, y, fg;
+    uint8_t  len;                    /* 0 = slot unused */
+    char     s[GFX_LABEL_CHARS];
+} gfx_label;
+
+/*
+ * Copied field by field, NOT by struct assignment - that emits a memcpy call
+ * and there is no libc.
+ *
+ * gfx_row solves the same problem by padding to whole vectors and using
+ * vec_copy. That does not port here: gfx_row holds only uint16_t, but a label
+ * holds a POINTER, which is 4 bytes on the device and 8 on the host that runs
+ * the tests. Any fixed padding is wrong on one of them - the size assertion
+ * caught exactly that. Field-wise copy is size-agnostic, and at 8 labels per
+ * present the cost does not register.
+ */
+static void label_copy(gfx_label *d, const gfx_label *s)
+{
+    int i;
+    d->font = s->font; d->x = s->x; d->y = s->y; d->fg = s->fg; d->len = s->len;
+    for (i = 0; i < GFX_LABEL_CHARS; i++) d->s[i] = s->s[i];
+}
+
+static gfx_label g_label[GFX_MAX_LABELS];
+static gfx_label g_label_sent[GFX_MAX_LABELS];
+
+static int label_differs(const gfx_label *a, const gfx_label *b)
+{
+    int i;
+    if (a->len != b->len) return 1;
+    if (a->len == 0u) return 0;                  /* both unused */
+    if (a->font != b->font || a->x != b->x || a->y != b->y || a->fg != b->fg)
+        return 1;
+    for (i = 0; i < (int)a->len; i++) if (a->s[i] != b->s[i]) return 1;
+    return 0;
+}
+
+/* Screen rectangle a label occupies. Width is len * font->w, a multiple of 8
+ * because font widths are, so the extent lands on the grid the transport wants. */
+static void label_rect(const gfx_label *l, int *x0, int *y0, int *x1, int *y1)
+{
+    *x0 = (int)l->x;
+    *y0 = (int)l->y;
+    *x1 = (int)l->x + (int)l->len * (int)l->font->w - 1;
+    *y1 = (int)l->y + (int)l->font->h - 1;
+}
+
+/*
  * Scratch wide enough for the WORST case before normalisation.
  *
  * insert_run can emit every existing run plus the new one plus a clipped tail.
@@ -79,10 +132,42 @@ void gfx_init(void)
         vec_copy(&g_sent[i], &g_model[i], GFX_ROW_VECTORS);
     }
     for (i = 0u; i < (uint32_t)TWORDS; i++) g_touched[i] = 0u;
+    for (i = 0u; i < (uint32_t)GFX_MAX_LABELS; i++) {
+        g_label[i].len = 0u;      g_label[i].font = NULL;
+        g_label_sent[i].len = 0u; g_label_sent[i].font = NULL;
+    }
     g_changed_pending = 0u;
     g_overflow_pending = 0u;
     elide_init();          /* marks everything dirty: first present repaints */
 }
+
+int gfx_text(int id, uint16_t x, uint16_t y, const char *str,
+             uint16_t fg, const gfx_font *font)
+{
+    gfx_label w;
+    int i = 0;
+
+    if (id < 0 || id >= GFX_MAX_LABELS) return 0;
+
+    w.font = font;
+    /* Snap DOWN to the grid: every glyph then starts on a vector boundary and
+     * the blit needs no masking or unaligned path. */
+    w.x  = (uint16_t)(x & ~(uint16_t)(GFX_XGRID - 1));
+    w.y  = y;
+    w.fg = fg;
+    if (str != NULL && font != NULL) {
+        while (str[i] != '\0' && i < GFX_LABEL_CHARS) { w.s[i] = str[i]; i++; }
+    }
+    w.len = (uint8_t)i;
+    while (i < GFX_LABEL_CHARS) { w.s[i] = '\0'; i++; }
+    if (w.len == 0u) { w.font = NULL; w.x = 0u; w.y = 0u; w.fg = 0u; }
+
+    if (!label_differs(&g_label[id], &w)) return 0;
+    label_copy(&g_label[id], &w);
+    return 1;
+}
+
+void gfx_text_clear(int id) { (void)gfx_text(id, 0u, 0u, NULL, 0u, NULL); }
 
 void gfx_invalidate(void)
 {
@@ -249,9 +334,36 @@ static void gfx_rowfn(uint16_t *row, int y)
 {
     const gfx_row *m = &g_model[y];
     int i;
+
+    /* Background first. */
     for (i = 0; i < (int)m->n; i++) {
         uint16_t s = m->x[i], e = run_end(m, i);
         vec_fill16(row + s, m->c[i], (uint32_t)(e - s) / (uint32_t)GFX_XGRID);
+    }
+
+    /* Then text over it. The blit is transparent, so a glyph's clear bits keep
+     * whatever the runs just drew - which is what lets a label sit on a
+     * changing background without either layer knowing about the other. */
+    for (i = 0; i < GFX_MAX_LABELS; i++) {
+        const gfx_label *l = &g_label[i];
+        const gfx_font *f;
+        int gr, c, bpr;
+        if (l->len == 0u) continue;
+        f = l->font;
+        gr = y - (int)l->y;
+        if (gr < 0 || gr >= (int)f->h) continue;
+        bpr = (int)f->w / 8;
+        for (c = 0; c < (int)l->len; c++) {
+            int gx = (int)l->x + c * (int)f->w;
+            unsigned ch = (unsigned char)l->s[c];
+            if (gx + (int)f->w > SH8601_WIDTH) break;      /* clip at the edge */
+            if (ch < f->first || ch >= (unsigned)(f->first + f->count))
+                ch = (unsigned)f->first;                   /* unmapped -> space */
+            vec_glyph_row(row + gx,
+                          &f->bits[(((unsigned)(ch - f->first) * f->h)
+                                    + (unsigned)gr) * (unsigned)bpr],
+                          (uint32_t)bpr, l->fg);
+        }
     }
 }
 
@@ -270,6 +382,26 @@ int gfx_present(void)
         if (!is_touched(y)) continue;
         if (diff_extent(&g_sent[y], &g_model[y], &dx0, &dx1))
             elide_mark_rect(dx0, y, dx1, y);
+    }
+
+    /*
+     * Labels diff the same way rows do, and a changed label marks the union of
+     * where it WAS and where it IS - the old rectangle so the background can be
+     * repainted over it, the new one so the glyphs land.
+     */
+    g_stats.labels_changed = 0u;
+    for (y = 0; y < GFX_MAX_LABELS; y++) {
+        int x0, y0, x1, y1;
+        if (!label_differs(&g_label_sent[y], &g_label[y])) continue;
+        g_stats.labels_changed++;
+        if (g_label_sent[y].len != 0u) {
+            label_rect(&g_label_sent[y], &x0, &y0, &x1, &y1);
+            elide_mark_rect(x0, y0, x1, y1);
+        }
+        if (g_label[y].len != 0u) {
+            label_rect(&g_label[y], &x0, &y0, &x1, &y1);
+            elide_mark_rect(x0, y0, x1, y1);
+        }
     }
 
     rc = elide_flush(gfx_rowfn);
@@ -294,6 +426,7 @@ int gfx_present(void)
         for (y = 0; y < ROWS; y++)
             if (is_touched(y)) vec_copy(&g_sent[y], &g_model[y], GFX_ROW_VECTORS);
         for (i = 0u; i < (uint32_t)TWORDS; i++) g_touched[i] = 0u;
+        for (y = 0; y < GFX_MAX_LABELS; y++) label_copy(&g_label_sent[y], &g_label[y]);
         g_changed_pending = 0u;
         g_overflow_pending = 0u;
     }

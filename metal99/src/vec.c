@@ -91,3 +91,38 @@ void vec_xor16(uint16_t *dst, const uint16_t *src, uint32_t vectors)
         "  bnez          %2, 1b                                      \n"
         : "+a"(d), "+a"(src), "+a"(vectors) : : "memory");
 }
+
+void vec_glyph_row(uint16_t *dst, const uint8_t *bits, uint32_t bytes,
+                   uint16_t fg)
+{
+    /* MSB first, so lane 0 - the leftmost pixel - tests bit 7. */
+    static const uint16_t VEC_ALIGN lanebit[8] =
+        { 0x80u, 0x40u, 0x20u, 0x10u, 0x08u, 0x04u, 0x02u, 0x01u };
+    static const uint16_t VEC_ALIGN zero[8] = { 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u };
+    uint16_t f = fg;
+
+    if (bytes == 0u) return;
+
+    __asm__ __volatile__ ("ee.vld.128.ip " VEC_Q_GLANE ", %0, 0" : : "a"(lanebit) : "memory");
+    __asm__ __volatile__ ("ee.vld.128.ip " VEC_Q_GZERO ", %0, 0" : : "a"(zero)    : "memory");
+    __asm__ __volatile__ ("ee.vldbc.16   " VEC_Q_GFG   ", %0"    : : "a"(&f)      : "memory");
+
+    /* dst = (dst AND clear_mask) OR (fg AND NOT clear_mask).
+     * One compare produces both halves of the select, which is why transparent
+     * costs the same as opaque here. */
+    __asm__ __volatile__ (
+        "1:                                                                \n"
+        "  ee.vldbc.8     " VEC_Q_GBITS ", %1                              \n"
+        "  addi.n         %1, %1, 1                                        \n"
+        "  ee.andq        " VEC_Q_GBITS ", " VEC_Q_GBITS ", " VEC_Q_GLANE "\n"
+        "  ee.vcmp.eq.s16 " VEC_Q_GSEL  ", " VEC_Q_GBITS ", " VEC_Q_GZERO "\n"
+        "  ee.notq        " VEC_Q_GTMP  ", " VEC_Q_GSEL  "                 \n"
+        "  ee.vld.128.ip  " VEC_Q_GDST  ", %0, 0                           \n"
+        "  ee.andq        " VEC_Q_GDST  ", " VEC_Q_GDST  ", " VEC_Q_GSEL  "\n"
+        "  ee.andq        " VEC_Q_GTMP  ", " VEC_Q_GFG   ", " VEC_Q_GTMP  "\n"
+        "  ee.orq         " VEC_Q_GDST  ", " VEC_Q_GDST  ", " VEC_Q_GTMP  "\n"
+        "  ee.vst.128.ip  " VEC_Q_GDST  ", %0, 16                          \n"
+        "  addi.n         %2, %2, -1                                       \n"
+        "  bnez           %2, 1b                                           \n"
+        : "+a"(dst), "+a"(bits), "+a"(bytes) : : "memory");
+}

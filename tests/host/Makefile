@@ -17,7 +17,7 @@ digest_test: digest_test.c vec_host.c $(FOLD)
 
 # gfx_test links the real metal99/src/gfx.c and stubs only the layers below it,
 # so the run model under test is the firmware's own.
-gfx_test: gfx_test.c gfx_stubs.c ../../metal99/src/gfx.c vec_host.c $(FOLD)
+gfx_test: gfx_test.c gfx_stubs.c ../../metal99/src/gfx.c ../../metal99/src/font_share.c vec_host.c $(FOLD)
 	$(CC) $(CFLAGS) $^ -o $@
 
 test: digest_test gfx_test

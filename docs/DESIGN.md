@@ -415,6 +415,63 @@ the first line are the resync alone.
 Every wrap still marks exactly 192 rows in 2 spans, through the new path: at the
 wrap old and new do not overlap, so both bands are genuine net changes.
 
+### 5.3 Text is described, not rasterised
+
+Measured 2026-08-24.
+
+**Why text is not runs.** A glyph scanline like `0b01100110` is five runs. A
+twenty-character line would be a hundred runs in a row that holds eight, so
+rasterising text into the run model is not available. The other obvious move -
+a "this row is custom, call back" escape hatch - gives up the diffing the whole
+layer exists for.
+
+So a label is a DESCRIPTION: position, colour, font, and the string. It diffs
+exactly like a run list, and it is double-buffered against what the panel holds
+for the same reason rows are (5.2).
+
+**The string is copied, not pointed at.** A caller formatting into a reused
+buffer would otherwise change the content without changing the pointer, and the
+diff would miss it entirely. Owning the bytes makes the comparison exact rather
+than a hash that can collide.
+
+**The blit is transparent.** A clear glyph bit keeps whatever the runs drew,
+which costs nothing extra: the mask that selects the foreground is the same mask
+that keeps the destination. Text therefore composes over a changing background
+without either layer knowing about the other - the run diff marks the row and
+`gfx_rowfn` re-renders it runs-then-text.
+
+| measured on hardware | px/frame |
+|---|---|
+| first paint, three labels | 11,200 |
+| **setting identical text again** | **1,472 - resync only; the text is free** |
+| updating a 5-digit 16x32 counter | 3,989 (2,560 label + ~1,374 resync) |
+| a full screen, for scale | 164,864 |
+
+**A static label marks nothing.** It cannot differ from what the panel holds, so
+the 20 s resync-off window and its wrap trace are completely unaffected by a
+title sitting on screen throughout - still 8 rows and 2 spans per frame, still
+exactly 192 rows at every wrap. The label still RENDERS over the bar each time
+the bar passes beneath it.
+
+#### Fonts come from TrueType, at build time
+
+`tools/mkfont.py` rasterises a TTF once on the host into 1bpp bitmaps. The
+device cannot do this: a TrueType scan converter wants malloc, libc and floating
+point, and outline filling is irreducibly scalar per-element work - 3.0 says
+compute has to stay negligible or the wire-bound thesis stops holding. Blitting
+bits is 1.375 instructions per pixel (6.9a); rasterising outlines is not in the
+same class.
+
+Build time also means the typeface is a CHOICE, with a licence chosen rather
+than inherited from whatever console font is installed. Share Tech Mono, SIL OFL
+1.1, TTF sources tracked in `tools/fonts/` so the generated table is
+reproducible.
+
+Glyph width is a multiple of 8 by construction, so a glyph placed on the 8px
+grid occupies whole 128-bit vectors and the blit needs no masking and no
+unaligned path. Anti-aliased text would need per-channel arithmetic on packed
+RGB565, which 6.9b records as the one place this ISA runs out.
+
 #### The safety net is now the dominant cost
 
 The rolling resync refreshes 4 full-width rows every frame: 1,472 px, against

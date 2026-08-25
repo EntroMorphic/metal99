@@ -7,6 +7,7 @@
 #include "sh8601.h"
 #include "elide.h"
 #include "gfx.h"
+#include "font.h"
 #include "selftest.h"
 
 #define ROW_VECTORS (SH8601_WIDTH * 2 / VEC_BYTES)
@@ -48,6 +49,15 @@ static void scene(uint16_t *row, int y)
     } else {
         vec_fill16(row, sh8601_rgb565(0, 0, 0), ROW_VECTORS);
     }
+}
+
+/* Decimal into a caller's buffer. No libc, and con_dec writes to the console
+ * rather than to memory, so this is the one place that needs it. */
+static void u32str(char *b, uint32_t v, int width)
+{
+    int i;
+    for (i = width - 1; i >= 0; i--) { b[i] = (char)('0' + (v % 10u)); v /= 10u; }
+    b[width] = '\0';
 }
 
 static void put_ms(uint32_t cycles)
@@ -194,6 +204,48 @@ void app_entry(void)
         con_puts("  gfx demo done - centred box is on the panel\r\n");
     }
 
+    /* ---------------- text ---------------- */
+    {
+        char buf[12];
+        uint32_t px_first = 0u, px_update = 0u;
+        int k;
+
+        con_puts("\r\ntext layer\r\n");
+        (void)gfx_solid(0u, SH8601_HEIGHT - 1u, BGCOL);
+        (void)gfx_present();
+
+        /* Two sizes, both rasterised from the same TTF at build time. */
+        (void)gfx_text(0, 16u,  40u, "metal99", FGCOL, &share_mono_16x32);
+        (void)gfx_text(1, 16u,  88u, "Share Tech Mono, 8x16", FGCOL,
+                       &share_mono_8x16);
+        (void)gfx_text(2, 16u, 112u, "1bpp, blitted at 1.375 i/px", FGCOL,
+                       &share_mono_8x16);
+        (void)gfx_present();
+        px_first = gfx_last()->px_sent;
+        con_puts("  first paint      : "); con_dec((int32_t)px_first);
+        con_puts(" px\r\n");
+
+        /* Setting the SAME text again must cost nothing at all. */
+        (void)gfx_text(0, 16u, 40u, "metal99", FGCOL, &share_mono_16x32);
+        (void)gfx_present();
+        con_puts("  identical text   : "); con_dec((int32_t)gfx_last()->px_sent);
+        con_puts(" px (resync only)\r\n");
+
+        /* A counter: only the label's own rectangle moves. */
+        for (k = 0; k < 60; k++) {
+            u32str(buf, (uint32_t)k, 5);
+            (void)gfx_text(3, 16u, 160u, buf, sh8601_rgb565(120, 220, 255),
+                           &share_mono_16x32);
+            if (gfx_present() != SPI2_OK) break;
+            px_update += gfx_last()->px_sent;
+        }
+        con_puts("  counter update   : "); con_dec((int32_t)(px_update / 60u));
+        con_puts(" px/frame for a 5-digit field\r\n");
+        con_puts("  full screen would be 164864 px\r\n");
+
+        delay_ms(1500u);
+    }
+
     con_puts("mode | rows spans | update | eff fps | headroom vs 16.67ms\r\n");
 
     /*
@@ -218,6 +270,16 @@ void app_entry(void)
      */
     (void)gfx_solid(0u, SH8601_HEIGHT - 1u, BLACKCOL);
     (void)gfx_solid((uint16_t)g_bar_y, (uint16_t)(g_bar_y + BAR_H - 1), BARCOL);
+    gfx_text_clear(1); gfx_text_clear(2); gfx_text_clear(3);
+    /* A STATIC label stays on screen for the whole paced run. It marks nothing
+     * after the first present - a label that has not changed cannot differ from
+     * what the panel holds - so the wrap trace below stays exactly 192 rows and
+     * the 20 s resync-off window is unaffected. It still RENDERS over the bar
+     * every time the bar passes under it, because the blit is transparent and
+     * gfx_rowfn draws runs then text. Static text being free is the whole
+     * point of describing it rather than drawing it. */
+    (void)gfx_text(0, 16u, 8u, "metal99 60Hz", sh8601_rgb565(120, 220, 255),
+                   &share_mono_16x32);
     (void)gfx_present();
     {
     uint32_t period = CPU_HZ / 60u;      /* cycles in one 60 Hz frame */
