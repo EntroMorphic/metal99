@@ -5,7 +5,7 @@ CFLAGS = -std=c99 -pedantic-errors -Wall -Wextra -Wshadow -Werror -O2 \
          -I../../metal99/src
 FOLD   = ../../metal99/src/fold.c
 
-all: host_render digest_test gfx_test
+all: host_render digest_test gfx_test gfx_png
 
 host_render: host_render.c vec_host.c $(FOLD)
 	$(CC) $(CFLAGS) $^ -o $@
@@ -21,11 +21,20 @@ gfx_test: gfx_test.c gfx_stubs.c ../../metal99/src/gfx.c ../../metal99/src/elide
           ../../metal99/src/font_share.c vec_host.c $(FOLD)
 	$(CC) $(CFLAGS) $^ -o $@
 
+# Renders scenes to images so a change can be LOOKED at without a panel.
+gfx_png: gfx_png.c gfx_stubs.c ../../metal99/src/gfx.c ../../metal99/src/elide.c \
+         ../../metal99/src/font_share.c vec_host.c $(FOLD)
+	$(CC) $(CFLAGS) $^ -o $@
+
+png: gfx_png
+	./gfx_png $(FRAMES)
+	@python3 ../../tools/topng.py out_ideal.ppm out_panel.ppm out_diff.ppm
+
 test: digest_test gfx_test
 	./digest_test
 	./gfx_test
 
 clean:
-	rm -f host_render digest_test gfx_test *.ppm
+	rm -f host_render digest_test gfx_test gfx_png *.ppm *.png
 
-.PHONY: all clean test
+.PHONY: all clean test png

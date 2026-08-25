@@ -17,8 +17,21 @@ about thirty times.
 | `isa_probe.sh` | Which `EE.*` vector mnemonics assemble | the ISA table in DESIGN.md 6.9 |
 | `neogpu_sizes.c` | NeoGPU struct sizes + capacity cost | the memory budget in DESIGN.md 7.4 |
 | `reg.sh` | Look up S3 registers/bitfields from the SoC headers | hand-grepped ~15x during bring-up |
+| `tests/host/gfx_png.c` | Render scenes to ideal/panel/diff images | the panel cannot be read back; this is the only way to LOOK at a change without hardware |
+| `tools/topng.py` | PPM to PNG | PPM is what C can write dependency-free |
 | `tests/host/digest_test.c` | Assertions on the transmit-ledger digest | found the sparse-payload collision in the old digest |
 | `tests/host/host_render.c` | Run metal99 renderers on the desktop -> PPM | ~200ms iteration vs a flash cycle |
+
+**`make -C tests/host png` renders three images.** `ideal` is a full render of
+the model - what the screen should show. `panel` is a virtual panel to which
+only the spans elide actually marked have been applied, frame after frame with
+the resync off - what the screen would show if the transport were perfect.
+`diff` marks disagreements in magenta.
+
+The distinction is the point. A dirty screen with a clean diff means the fault
+is BELOW the ledger: the marking was right and something downstream lost it.
+That is a different bug from a missed mark, and there was previously no way to
+tell them apart without a human describing the glass.
 
 ## Gotchas worth keeping
 
