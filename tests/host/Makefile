@@ -6,7 +6,7 @@ CFLAGS = -std=c99 -pedantic-errors -Wall -Wextra -Wshadow -Werror -O2 \
 FOLD   = ../../metal99/src/fold.c
 RGB    = ../../metal99/src/rgb565.c
 
-all: host_render digest_test gfx_test ui_test gfx_png
+all: host_render digest_test gfx_test ui_test vg_test gfx_png vg_png
 
 host_render: host_render.c vec_host.c $(FOLD) $(RGB)
 	$(CC) $(CFLAGS) $^ -o $@
@@ -28,6 +28,13 @@ gfx_png: gfx_png.c gfx_stubs.c ../../metal99/src/gfx.c ../../metal99/src/elide.c
          ../../metal99/src/font_share.c vec_host.c $(FOLD) $(RGB)
 	$(CC) $(CFLAGS) $^ -o $@
 
+vg_png: vg_png.c ../../metal99/src/vg.c ../../metal99/src/trig.c vec_host.c
+	$(CC) $(CFLAGS) $^ -o $@
+
+vgpng: vg_png
+	./vg_png
+	@python3 ../../tools/topng.py out_vg.ppm
+
 png: gfx_png
 	./gfx_png $(FRAMES)
 	@python3 ../../tools/topng.py out_ideal.ppm out_panel.ppm out_diff.ppm
@@ -37,12 +44,16 @@ ui_test: ui_test.c gfx_stubs.c ../../metal99/src/ui.c ../../metal99/src/gfx.c \
          ../../metal99/src/font_share.c vec_host.c $(FOLD) $(RGB)
 	$(CC) $(CFLAGS) $^ -o $@
 
-test: digest_test gfx_test ui_test
+vg_test: vg_test.c ../../metal99/src/vg.c ../../metal99/src/trig.c vec_host.c
+	$(CC) $(CFLAGS) $^ -o $@
+
+test: digest_test gfx_test ui_test vg_test
 	./digest_test
 	./gfx_test
 	./ui_test
+	./vg_test
 
 clean:
-	rm -f host_render digest_test gfx_test ui_test gfx_png *.ppm *.png
+	rm -f host_render digest_test gfx_test ui_test vg_test gfx_png vg_png *.ppm *.png
 
-.PHONY: all clean test png
+.PHONY: all clean test png vgpng
