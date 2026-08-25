@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "gfx.h"
+#include "elide.h"
 #include "font.h"
 #include "gfx_stubs.h"
 
@@ -36,6 +37,44 @@ static int band_is(int y, int x0, int x1, uint16_t c)
     return 1;
 }
 
+/*
+ * A SIMULATED PANEL.
+ *
+ * Every other check here asks what the MODEL says. This one asks the question
+ * that actually matters: after a present, does the glass match the model?
+ *
+ * The panel only receives the marked rectangles, so if marking misses anything
+ * the model changed, the difference persists on screen until something else
+ * happens to cover it - which is exactly what an artifact is. Reported from
+ * hardware as "text over the moving bar leaves debris while touching", and not
+ * findable by reading the model, because the model was right the whole time.
+ */
+static uint16_t g_panel[SH8601_HEIGHT][W];
+
+static void panel_apply(void)
+{
+    int i, y, x;
+    for (i = 0; i < g_nmarks; i++) {
+        for (y = g_marks[i].y0; y <= g_marks[i].y1; y++) {
+            stub_render(y, g_row);
+            for (x = g_marks[i].x0; x <= g_marks[i].x1; x++)
+                g_panel[y][x] = g_row[x];
+        }
+    }
+}
+
+/* Rows where the glass disagrees with a full render of the model. */
+static int panel_mismatch_rows(void)
+{
+    int y, x, bad = 0;
+    for (y = 0; y < SH8601_HEIGHT; y++) {
+        stub_render(y, g_row);
+        for (x = 0; x < W; x++)
+            if (g_panel[y][x] != g_row[x]) { bad++; break; }
+    }
+    return bad;
+}
+
 int main(void)
 {
     const uint16_t BG = 0x1111u, FG = 0x2222u, C3 = 0x3333u;
@@ -44,6 +83,17 @@ int main(void)
 
     printf("gfx_test: metal99 run-model\n");
     gfx_init();
+    /*
+     * SAFETY NET OFF for the whole suite.
+     *
+     * The real elide is linked now, and its rolling resync adds four
+     * full-width rows to every flush. That makes "this call transmits nothing"
+     * untestable, and worse, it would SCRUB any marking bug the panel-match
+     * check exists to find - the same masking that hid a marking leak on
+     * hardware until the net was switched off (DESIGN.md 6.6k). Off here for
+     * exactly that reason.
+     */
+    elide_set_resync(0u);
     (void)gfx_present();            /* hands the rowfn to the stub */
 
     /* ---- 1. THE CASE THE OLD MODEL COULD NOT EXPRESS ---- */
@@ -314,6 +364,55 @@ int main(void)
         check(ok, "a label running past the edge is clipped, not wrapped");
 
         gfx_text_clear(1); gfx_text_clear(2); (void)gfx_present();
+    }
+
+    /* ---- 14. the glass must match the model, frame after frame ----
+     *
+     * Reproduces the reported artifact: a moving bar, static title text, and a
+     * label whose contents change every frame - the shape a touch readout over
+     * an animation takes. */
+    {
+        const uint16_t BLACK = 0x0000u, ORANGE = 0xE003u, CYAN = 0x7F1Fu;
+        char lbl[16];
+        int frame, bar = 0, worst = 0;
+
+        gfx_init();
+        (void)gfx_present();
+        (void)gfx_solid(0, SH8601_HEIGHT - 1, BLACK);
+        (void)gfx_text(0, 16, 8, "metal99 60Hz", CYAN, &share_mono_16x32);
+        stub_reset();
+        (void)gfx_present();
+        /* Seed the panel from a full render: the first present repaints all. */
+        {
+            int y, x;
+            for (y = 0; y < SH8601_HEIGHT; y++) {
+                stub_render(y, g_row);
+                for (x = 0; x < W; x++) g_panel[y][x] = g_row[x];
+            }
+        }
+
+        for (frame = 0; frame < 120; frame++) {
+            int m;
+            bar = (bar + 4) % (SH8601_HEIGHT - 96);
+            /* whole scene, declaratively - the same as main.c */
+            (void)gfx_solid(0, SH8601_HEIGHT - 1, BLACK);
+            (void)gfx_solid((uint16_t)bar, (uint16_t)(bar + 95), ORANGE);
+            (void)gfx_text(0, 16, 8, "metal99 60Hz", CYAN, &share_mono_16x32);
+            lbl[0] = '0'; lbl[1] = ' '; lbl[2] = 'X'; lbl[3] = ':';
+            lbl[4] = (char)('0' + (frame / 100) % 10);
+            lbl[5] = (char)('0' + (frame / 10) % 10);
+            lbl[6] = (char)('0' + frame % 10);
+            lbl[7] = '\0';
+            (void)gfx_text(1, 16, 56, lbl, CYAN, &share_mono_16x32);
+
+            stub_reset();
+            (void)gfx_present();
+            panel_apply();
+            m = panel_mismatch_rows();
+            if (m > worst) worst = m;
+        }
+        check(worst == 0, "panel matches the model after every frame");
+        if (worst) printf("     %d row(s) on the glass disagree with the model\n", worst);
     }
 
     printf("%s (%d failure%s)\n", g_fails ? "FAILED" : "OK",

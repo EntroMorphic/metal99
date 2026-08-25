@@ -9,6 +9,8 @@
 #include "gfx.h"
 #include "font.h"
 #include "selftest.h"
+#include "i2c.h"
+#include "touch.h"
 
 #define ROW_VECTORS (SH8601_WIDTH * 2 / VEC_BYTES)
 
@@ -38,6 +40,7 @@
  * been erased and was not is unmistakable on an AMOLED. */
 #define BLACKCOL sh8601_rgb565(0, 0, 0)
 #define BARCOL   sh8601_rgb565(255, 60, 0)
+#define TOUCHCOL sh8601_rgb565(120, 220, 255)
 static int g_bar_y;
 
 static void scene(uint16_t *row, int y)
@@ -60,6 +63,18 @@ static void u32str(char *b, uint32_t v, int width)
     b[width] = '\0';
 }
 
+/* "<id> X:nnn Y:nnn" - 13 chars. The leading digit is the controller's own
+ * tracking id, which is what makes two contacts distinguishable as they move
+ * rather than just two coordinates that happen to exist. */
+static void fmt_point(char *b, const touch_point *p)
+{
+    b[0] = (char)('0' + (p->id & 0x0Fu));
+    b[1] = ' '; b[2] = 'X'; b[3] = ':';
+    u32str(b + 4, (uint32_t)p->x, 3);
+    b[7] = ' '; b[8] = 'Y'; b[9] = ':';
+    u32str(b + 10, (uint32_t)p->y, 3);
+}
+
 static void put_ms(uint32_t cycles)
 {
     uint32_t us = cycles / (CPU_HZ / 1000000u);
@@ -69,7 +84,7 @@ static void put_ms(uint32_t cycles)
 
 void app_entry(void)
 {
-    int rc;
+    int rc, trc;
 
     con_puts("\r\n=== metal99 : elision ===\r\n");
     /* NOT ignorable. g_cpu_hz only updates on success, so a silent failure
@@ -86,6 +101,59 @@ void app_entry(void)
     (void)spi2_set_clock(40u);
     rc = sh8601_init();
     con_puts("sh8601_init rc="); con_dec((int32_t)rc); con_puts("\r\n");
+
+    /* ---- touch: first contact ----
+     *
+     * Identity BEFORE coordinates, exactly as the panel was brought up. A
+     * controller that ACKs 0x38 is not necessarily a FocalTech part - the V2
+     * board's CST816 sits at the same address - and reading its registers as
+     * if they were FT5x06's would yield plausible coordinates from nowhere. */
+    i2c_init();
+    delay_ms(10u);          /* let the bus settle before the first transaction */
+    /* SEPARATE variable. `rc` is reassigned by every call between here and the
+     * touch demo, so testing it there tested whatever ran last - and the demo
+     * duly ran on a boot where touch_init had reported the controller absent. */
+    con_puts("  i2c lines before="); con_dec((int32_t)i2c_dbg_lines_before());
+    con_puts(" after="); con_dec((int32_t)i2c_dbg_lines_after());
+    con_puts(" pulses="); con_dec((int32_t)i2c_dbg_pulses());
+    con_puts("  (3 = both high = idle)\r\n");
+    /* Identity, then 20 more identity reads. If the controller answers once it
+     * should answer every time; a mixed result means the bus is marginal rather
+     * than the part being absent, and that is a different bug. Measured here
+     * rather than across reboots, because reboot-based measurement was really
+     * measuring whether the USB console re-enumerated in time. */
+    trc = touch_init();
+    con_puts("touch: rc="); con_dec((int32_t)trc);
+    con_puts(" vendor="); con_hex32(touch_vendor_id());
+    con_puts(" chip=");   con_hex32(touch_chip_id());
+    /* Captured BEFORE the scan: the scan's own probes overwrite these, and a
+     * wedged bus makes every one of them fail, so reading them afterwards
+     * describes the scan rather than the failure being diagnosed. */
+    con_puts(" int="); con_hex32(i2c_dbg_int());
+    con_puts(" sr=");  con_hex32(i2c_dbg_sr());
+    {
+        int k, good = 0;
+        uint8_t v;
+        for (k = 0; k < 20; k++)
+            if (i2c_read(0x38u, 0xA8u, &v, 1u) == I2C_OK && v == 0x11u) good++;
+        con_puts("  identity reads: "); con_dec((int32_t)good);
+        con_puts("/20 returned vendor 0x11\r\n");
+    }
+    con_puts(trc == TOUCH_OK ? "  FT3168 present\r\n"
+                            : "  (-1 absent, -2 wrong vendor, -3 i2c)\r\n");
+    /* ALWAYS scan, not only on failure. With correct timing the bus should show
+     * exactly two devices - the FT3168 at 0x38 and the TCA9554 expander - and
+     * anything else means the timing is wrong again rather than the part being
+     * missing. An earlier build with sda_sample set wrong reported seven. */
+    {
+        uint8_t found[8];
+        uint32_t n = i2c_scan(found, 8u), k;
+        con_puts("  i2c scan: "); con_dec((int32_t)n); con_puts(" device(s)");
+        for (k = 0u; k < n; k++) { con_puts(" "); con_hex32(found[k]); }
+        con_puts("  int="); con_hex32(i2c_dbg_int());
+        con_puts(" sr="); con_hex32(i2c_dbg_sr());
+        con_puts("\r\n");
+    }
 
     selftest_liveness();
     /* Print the RETURN VALUE, not a second copy of selftest.c's own verdict.
@@ -311,6 +379,10 @@ void app_entry(void)
      * modular reporting. */
     uint32_t f;
     int net_off = 0, wrapped = 0;
+    char tbuf[16];
+    touch_state ts;
+    ts.n = 0u;
+    tbuf[0] = '\0';
 
     for (f = 0u; ; f++) {
         if (f == STATIONARY_FRAMES) {
@@ -328,40 +400,69 @@ void app_entry(void)
         uint32_t fps10, budget10;
 
         /*
-         * DRIVEN THROUGH gfx, NOT RAW elide.
+         * DESCRIBE THE WHOLE SCENE, EVERY FRAME.
          *
-         * This loop is the strongest verification in the project - 20 s with
-         * the resync safety net down, every wrap traced - and it used to call
-         * elide_mark() and scene() directly, so it tested elide's marking and
-         * nothing above it. gfx's second model, g_sent, is what the panel is
-         * believed to hold; if that ever drifts from reality the symptom is
-         * exactly what this loop exists to catch, and it was the one layer the
-         * loop did not touch.
+         * The previous version updated incrementally - erase the bar where it
+         * was, draw it where it is, same for the touch box - and that is what
+         * produced trails. Erasing the box painted BLACK over wherever it had
+         * been, but what was underneath might have been the bar, so lifting a
+         * finger punched a black hole in it that healed only when the bar next
+         * scrolled over that row.
          *
-         * Describing the scene rather than marking it also removes the last
-         * hand-marking from the demo. There is nothing left here to get wrong.
+         * That is the bug you get from doing the layer's job by hand. A
+         * retained-mode model already knows what each row should look like;
+         * telling it "erase this rectangle" is telling it about a STEP rather
+         * than a STATE, and a step cannot know what it is covering.
+         *
+         * So: background, then bar, then box, in z-order, from scratch, every
+         * frame. It costs nothing extra - gfx_present diffs against what the
+         * panel actually holds (5.2), so a row described as orange that is
+         * already orange marks nothing. The steady-state cost stays at the 8
+         * rows the bar's leading and trailing edges represent, and the wrap
+         * still marks exactly 192. Describing more does not transmit more.
          */
         {
-            /* First STATIONARY_FRAMES (3s at 60Hz): bar STATIONARY. If the screen
-             * shows one clean bar on black, the window/write path is correct
-             * and any smearing afterwards is a MARKING problem. */
+            /* First STATIONARY_FRAMES (3s at 60Hz): bar STATIONARY. If the
+             * screen shows one clean bar on black, the window/write path is
+             * correct and any smearing afterwards is a MARKING problem. */
             int step  = (f < STATIONARY_FRAMES) ? 0 : 4;
             int old_y = g_bar_y;
             int new_y = (g_bar_y + step) % BAR_TRAVEL;
             /* THE WRAP IS THE FAILURE POINT. Everywhere else consecutive bar
              * positions overlap by 92 of 96 rows, so even a badly wrong mark
              * gets covered by its neighbour. At the wrap old and new stop being
-             * adjacent, the cover fails, and a marking bug leaves red behind -
-             * which is exactly what DESIGN.md 6.6k records. Trace it explicitly
-             * rather than hoping the every-60-frames telemetry lands on one:
-             * the bar wraps every 88 frames, so it mostly does not. */
+             * adjacent, the cover fails, and a marking bug leaves colour behind
+             * - which is exactly what DESIGN.md 6.6k records. Trace it
+             * explicitly rather than hoping the every-60-frames telemetry lands
+             * on one: the bar wraps every 88 frames, so it mostly does not. */
             wrapped = (new_y < old_y);
-            if (new_y != old_y)
-                (void)gfx_solid((uint16_t)old_y,
-                                (uint16_t)(old_y + BAR_H - 1), BLACKCOL);
-            (void)gfx_solid((uint16_t)new_y,
-                            (uint16_t)(new_y + BAR_H - 1), BARCOL);
             g_bar_y = new_y;
+        }
+
+        if (trc == TOUCH_OK) (void)touch_poll(&ts);
+
+        (void)gfx_solid(0u, SH8601_HEIGHT - 1u, BLACKCOL);
+        (void)gfx_solid((uint16_t)g_bar_y,
+                        (uint16_t)(g_bar_y + BAR_H - 1), BARCOL);
+        /*
+         * Both contacts, cleared on release.
+         *
+         * One label per slot rather than one line holding both: a label is a
+         * description, so a contact that has not moved marks nothing, and
+         * lifting one finger while the other stays down costs only the line
+         * that actually went away.
+         */
+        if (ts.n > 0u) {
+            fmt_point(tbuf, &ts.p[0]);
+            (void)gfx_text(1, 16u, 56u, tbuf, TOUCHCOL, &share_mono_16x32);
+        } else {
+            gfx_text_clear(1);
+        }
+        if (ts.n > 1u) {
+            fmt_point(tbuf, &ts.p[1]);
+            (void)gfx_text(2, 16u, 96u, tbuf, TOUCHCOL, &share_mono_16x32);
+        } else {
+            gfx_text_clear(2);
         }
 
         rc = gfx_present();
@@ -397,6 +498,8 @@ void app_entry(void)
              * which is what present-time diffing buys - the steady state fell
              * from 100 rows to 8. */
             con_puts(" expect rows=192 spans=2");
+            con_puts(" lbl="); con_dec((int32_t)gfx_last()->labels_changed);
+            con_puts(ts.n > 0u ? "  [TOUCHED]" : "");
             con_puts(net_off ? "  [resync OFF]\r\n" : "  [resync on]\r\n");
         }
 
@@ -429,6 +532,7 @@ void app_entry(void)
             con_puts(" | render="); put_ms(e->render_cycles);
             con_puts("flush=");     put_ms(e->flush_cycles);
             con_puts(" px="); con_dec((int32_t)e->px_sent);
+            con_puts(" lbl="); con_dec((int32_t)gfx_last()->labels_changed);
             con_puts(net_off ? " | resync=OFF\r\n" : " | resync=on\r\n");
         }
     }
