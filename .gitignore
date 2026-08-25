@@ -31,4 +31,5 @@ tmp/
 logs/
 tests/host/host_render
 tests/host/digest_test
+tests/host/gfx_test
 tests/host/*.ppm

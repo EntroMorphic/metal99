@@ -49,6 +49,26 @@ int sh8601_write_frame(void (*rowfn)(uint16_t *row, int y));
 int sh8601_write_span(uint16_t y0, uint16_t y1, void (*rowfn)(uint16_t *row, int y));
 
 /*
+ * Write a RECTANGLE: rows y0..y1, columns x0..x1, all inclusive.
+ *
+ * The address window (0x2A/0x2B) has always taken x0/x1 - this driver simply
+ * never used it, passing 0 and WIDTH-1 on every call, so a 10x10 element cost
+ * ten full-width rows. Sub-width costs the element's own pixels instead.
+ *
+ * ALIGNMENT: x0 and the width must be multiples of GFX_XGRID (8 px = 16 B).
+ * The FIFO is loaded with vector stores, so the sub-row's byte offset has to be
+ * 16-byte aligned (spi2.h). Snapped outward here rather than rejected, because
+ * a silently clipped rectangle is far worse than a slightly wide one.
+ *
+ * Banded DMA only applies to full-width spans - a sub-width band is not
+ * contiguous in memory and would need one descriptor per row, past the chain
+ * capacity. Sub-width spans therefore always take the FIFO path, which is the
+ * shipping transport anyway (DESIGN.md 6.6l).
+ */
+int sh8601_write_span_x(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1,
+                        void (*rowfn)(uint16_t *row, int y));
+
+/*
  * Full power-up sequence. There is NO reset pin on this board, so 0x11
  * (sleep out) is the only reset path and its 120 ms settle is a MINIMUM.
  */

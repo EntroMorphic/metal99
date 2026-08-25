@@ -25,6 +25,14 @@
  * the pacing loop for why the second one is the load-bearing test. */
 #define STATIONARY_FRAMES 180u
 #define RESYNC_OFF_FRAMES 1200u
+
+/* The A/B element: 88x88, away from every edge. Grid-aligned so nothing is
+ * snapped outward and the comparison is exact. */
+#define BOX_X 136u
+#define BOX_W 88u
+#define BOX_H 88u
+#define BGCOL sh8601_rgb565(0, 20, 60)
+#define FGCOL sh8601_rgb565(255, 70, 0)
 static int g_bar_y;
 
 static void scene(uint16_t *row, int y)
@@ -47,7 +55,7 @@ static void put_ms(uint32_t cycles)
 
 void app_entry(void)
 {
-    int rc, i;
+    int rc;
 
     con_puts("\r\n=== metal99 : elision ===\r\n");
     /* NOT ignorable. g_cpu_hz only updates on success, so a silent failure
@@ -108,12 +116,12 @@ void app_entry(void)
     {
         uint32_t ch;
         /* Background, once. */
-        ch = gfx_solid(0u, SH8601_HEIGHT - 1u, sh8601_rgb565(0, 20, 60));
+        ch = gfx_solid(0u, SH8601_HEIGHT - 1u, BGCOL);
         con_puts("  paint background : "); con_dec((int32_t)ch); con_puts(" rows changed\r\n");
         (void)gfx_present();
 
         /* Same colour again - should be FULLY elided, zero rows. */
-        ch = gfx_solid(0u, SH8601_HEIGHT - 1u, sh8601_rgb565(0, 20, 60));
+        ch = gfx_solid(0u, SH8601_HEIGHT - 1u, BGCOL);
         con_puts("  repaint same     : "); con_dec((int32_t)ch);
         con_puts(" rows changed (0 = elided)\r\n");
         (void)gfx_present();
@@ -121,35 +129,58 @@ void app_entry(void)
         con_puts(" rows\r\n");
     }
 
-    /* Animate a bar by describing WHERE IT IS, not what changed. The layer
-     * works out the difference, so there is no marking to get wrong. */
+    /*
+     * A/B: THE SAME MOTION, FULL-WIDTH vs SUB-WIDTH.
+     *
+     * Both move an element 4 px per frame for 60 frames and report the pixels
+     * actually transmitted. The bar is full width by nature, so it is already
+     * optimal and cannot improve - which is exactly why it hid this for so
+     * long. The box is what a real interface is made of.
+     */
     {
-        int prev = -1;
-        con_puts("  animating - layer derives dirty rows itself\r\n");
-        for (i = 0; i < 240; i++) {
-            int by = (i * 4) % BAR_TRAVEL;
-            uint32_t changed;
+        uint32_t px_bar = 0u, px_box = 0u;
+        int k, prev;
 
+        con_puts("  A/B: identical motion, full-width vs sub-width\r\n");
+
+        prev = -1;
+        for (k = 0; k < 60; k++) {
+            int by = (k * 4) % BAR_TRAVEL;
             if (prev >= 0) (void)gfx_solid((uint16_t)prev,
-                                           (uint16_t)(prev + BAR_H - 1),
-                                           sh8601_rgb565(0, 20, 60));
-            changed = gfx_solid((uint16_t)by, (uint16_t)(by + BAR_H - 1),
-                                sh8601_rgb565(255, 70, 0));
+                                           (uint16_t)(prev + BAR_H - 1), BGCOL);
+            (void)gfx_solid((uint16_t)by, (uint16_t)(by + BAR_H - 1), FGCOL);
             prev = by;
-
-            rc = gfx_present();
-            if (rc != SPI2_OK) { con_puts("  gfx_present FAILED\r\n"); break; }
-            if ((i % 60) == 0) {
-                const gfx_stats *g = gfx_last();
-                con_puts("   changed="); con_dec((int32_t)changed);
-                con_puts(" model="); con_dec((int32_t)g->rows_changed);
-                con_puts(" sent="); con_dec((int32_t)g->rows_sent);
-                con_puts(" spans="); con_dec((int32_t)g->spans);
-                con_puts(" "); put_ms(g->cycles); con_puts("\r\n");
-            }
-            delay_ms(16u);
+            if (gfx_present() != SPI2_OK) break;
+            px_bar += gfx_last()->px_sent;
         }
-        con_puts("  gfx demo done\r\n");
+
+        prev = -1;
+        for (k = 0; k < 60; k++) {
+            int by = (k * 4) % BAR_TRAVEL;
+            if (prev >= 0) (void)gfx_rect(BOX_X, (uint16_t)prev,
+                                          BOX_X + BOX_W - 1,
+                                          (uint16_t)(prev + BOX_H - 1), BGCOL);
+            (void)gfx_rect(BOX_X, (uint16_t)by, BOX_X + BOX_W - 1,
+                           (uint16_t)(by + BOX_H - 1), FGCOL);
+            prev = by;
+            if (gfx_present() != SPI2_OK) break;
+            px_box += gfx_last()->px_sent;
+        }
+
+        con_puts("   full-width bar  "); con_dec((int32_t)(px_bar / 60u));
+        con_puts(" px/frame\r\n");
+        con_puts("   sub-width box   "); con_dec((int32_t)(px_box / 60u));
+        con_puts(" px/frame\r\n");
+        con_puts("   ratio           ");
+        con_dec((int32_t)(px_box ? (px_bar / (px_box / 60u) / 60u) : 0));
+        con_puts("x fewer pixels for the same motion\r\n");
+
+        /* Leave a centred box on screen: the shape the old two-kind row model
+         * could not express at all. */
+        (void)gfx_solid(0u, SH8601_HEIGHT - 1u, BGCOL);
+        (void)gfx_rect(BOX_X, 180u, BOX_X + BOX_W - 1, 180u + BOX_H - 1, FGCOL);
+        (void)gfx_present();
+        con_puts("  gfx demo done - centred box is on the panel\r\n");
     }
 
     con_puts("mode | rows spans | update | eff fps | headroom vs 16.67ms\r\n");
@@ -311,7 +342,8 @@ void app_entry(void)
              * span and read by nobody. */
             con_puts(" | render="); put_ms(e->render_cycles);
             con_puts("flush=");     put_ms(e->flush_cycles);
-            con_puts(net_off ? "| resync=OFF\r\n" : "| resync=on\r\n");
+            con_puts(" px="); con_dec((int32_t)e->px_sent);
+            con_puts(net_off ? " | resync=OFF\r\n" : " | resync=on\r\n");
         }
     }
     }

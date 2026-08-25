@@ -144,17 +144,35 @@ static void band_chain(int b, int rows)
     }
 }
 
+#define XGRID 8                     /* 8 px = 16 B: the vector/FIFO alignment unit */
+
 int sh8601_write_span(uint16_t y0, uint16_t y1, void (*rowfn)(uint16_t *row, int y))
+{
+    return sh8601_write_span_x(0u, y0, (uint16_t)(SH8601_WIDTH - 1), y1, rowfn);
+}
+
+int sh8601_write_span_x(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1,
+                        void (*rowfn)(uint16_t *row, int y))
 {
     uint8_t VEC_ALIGN word[16];
     uint32_t t_frame = cpu_cycles();
     uint32_t t_mark;
-    int rc, y, b = 0, pending = 0, pend_rows = 0;
+    uint32_t span_bytes;
+    int rc, y, b = 0, pending = 0, pend_rows = 0, full;
 
     if (rowfn == NULL)                  return SPI2_E_NULL;
     if (y1 < y0 || y1 >= SH8601_HEIGHT) return SPI2_E_LEN;
+    if (x1 < x0 || x1 >= SH8601_WIDTH)  return SPI2_E_LEN;
 
-    rc = sh8601_set_window(0u, y0, SH8601_WIDTH - 1u, y1);
+    /* Snap OUTWARD to the alignment grid: cover more, never less. */
+    x0 = (uint16_t)(x0 & ~(uint16_t)(XGRID - 1));
+    x1 = (uint16_t)((x1 | (uint16_t)(XGRID - 1)));
+    if (x1 >= SH8601_WIDTH) x1 = (uint16_t)(SH8601_WIDTH - 1);
+
+    full = (x0 == 0u) && (x1 == (uint16_t)(SH8601_WIDTH - 1));
+    span_bytes = (uint32_t)(x1 - x0 + 1) * 2u;
+
+    rc = sh8601_set_window(x0, y0, x1, y1);
     if (rc != SPI2_OK) return rc;
 
     word[0] = OPCODE_PIXEL; word[1] = 0x00u; word[2] = 0x2Cu; word[3] = 0x00u;
@@ -167,21 +185,24 @@ int sh8601_write_span(uint16_t y0, uint16_t y1, void (*rowfn)(uint16_t *row, int
     g_stats.bytes         = 0u;
 
     /* FIFO transport: no banding possible (64-byte FIFO), no overlap possible
-     * (transfers are synchronous). Kept because measuring both transports on
-     * identical work has caught more than one wrong assumption. */
-    if (!g_use_dma) {
+     * (transfers are synchronous). Also the ONLY path for a sub-width span - a
+     * band of partial rows is not contiguous in memory, so it would need one
+     * descriptor per row and overrun the chain. */
+    if (!g_use_dma || !full) {
         static uint16_t VEC_ALIGN one[SH8601_WIDTH];
         for (y = (int)y0; y <= (int)y1; y++) {
             t_mark = cpu_cycles();
-            rowfn(one, y);
+            rowfn(one, y);                       /* renders the whole row   */
             g_stats.render_cycles += cpu_cycles() - t_mark;
 
             t_mark = cpu_cycles();
-            rc = stream((const uint8_t *)one, (uint32_t)SH8601_WIDTH * 2u,
-                        (y == (int)y1));
+            /* &one[x0] is 16-byte aligned because x0 is a multiple of 8 px,
+             * and span_bytes is a multiple of 16 for the same reason - so the
+             * FIFO's vector load reads exactly the bytes it sends. */
+            rc = stream((const uint8_t *)&one[x0], span_bytes, (y == (int)y1));
             g_stats.flush_cycles += cpu_cycles() - t_mark;
             if (rc != SPI2_OK) { spi2_cs_release(); return rc; }
-            g_stats.bytes += (uint32_t)SH8601_WIDTH * 2u;
+            g_stats.bytes += span_bytes;
         }
         g_stats.total_cycles = cpu_cycles() - t_frame;
         return SPI2_OK;

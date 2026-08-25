@@ -42,6 +42,7 @@ typedef struct {
     uint32_t rows_sent;      /* rows actually transmitted this frame  */
     uint32_t spans;          /* contiguous dirty runs                 */
     uint32_t bytes;          /* pixel bytes transmitted               */
+    uint32_t px_sent;        /* pixels transmitted - sub-width aware  */
     uint32_t cycles;         /* whole update                          */
     uint32_t resync_rows;    /* rows added by the rolling resync      */
     /*
@@ -70,8 +71,22 @@ void elide_init(void);
  */
 void elide_set_resync(uint32_t frames);
 
-/* Mark rows y0..y1 inclusive as needing transmission. */
+/* Mark rows y0..y1 inclusive, full width. */
 void elide_mark(int y0, int y1);
+
+/*
+ * Mark a RECTANGLE. Rows carry an x-extent, unioned when a row is marked more
+ * than once in a frame, and a span is transmitted only across its columns.
+ *
+ * This is where most of the saving now lives. Row-granular full-width marking
+ * charged a 10x10 element 10 rows x 368 px = 1.38 ms of wire; the same element
+ * as a rect costs 0.04 ms. The element that hid this for so long is the demo's
+ * bar, which is full width by nature and therefore already optimal.
+ *
+ * x0/x1 must be grid-aligned (GFX_XGRID) - the transport's sub-range needs a
+ * 16-byte-aligned byte offset. gfx snaps before it gets here; elide clamps.
+ */
+void elide_mark_rect(int x0, int y0, int x1, int y1);
 
 /* Mark everything dirty - full repaint next flush. */
 void elide_reset(void);
