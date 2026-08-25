@@ -17,24 +17,48 @@
 #include <stddef.h>
 
 /*
- * VECTOR REGISTER ALLOCATION - a contract, not an accident.
+ * VECTOR REGISTER ALLOCATION - a contract the PREPROCESSOR keeps.
  *
  * There is no compiler awareness of the q registers, so nothing stops two
- * modules clobbering each other. Current owners:
+ * modules clobbering each other. This used to be a hand-maintained comment
+ * listing which registers were free, and it drifted: it still read
+ * "q4-q7 UNUSED - take these for new code" long after vec_ramp16 took q4/q5
+ * and vec_xor16 took q6/q7, and CONTRIBUTING.md repeated the claim. Anyone
+ * following it would have landed on an occupied register and hit precisely the
+ * intermittent visual corruption the note existed to prevent.
  *
- *   q0  vec_fill16
- *   q1  vec_copy
- *   q2  vec_zero
- *   q3  spi2 FIFO load
- *   q4-q7  UNUSED - take these for new code
+ * So each register name now lives in exactly ONE place and is pasted into the
+ * asm by the preprocessor. The table cannot fall out of step with the code
+ * because it IS the code: claiming a register means adding a line here, and
+ * changing an owner's register changes the instruction that gets emitted.
  *
- * Any new EE.* code must claim a register here first. A collision would show
- * up as intermittent visual corruption, which is exactly the kind of bug this
- * project keeps paying for.
+ * This makes DRIFT impossible. It does not make COLLISION impossible - the
+ * preprocessor will happily paste the same name twice. Before introducing a
+ * new owner, check the name is not already spoken for below.
  */
+#define VEC_Q_FILL   "q0"    /* vec_fill16  broadcast value          */
+#define VEC_Q_COPY   "q1"    /* vec_copy    in-flight chunk          */
+#define VEC_Q_ZERO   "q2"    /* vec_zero    zero source              */
+#define VEC_Q_FIFO   "q3"    /* spi2_xfer   FIFO load (see spi2.c)   */
+#define VEC_Q_RAMP   "q4"    /* vec_ramp16  running accumulator      */
+#define VEC_Q_STEP   "q5"    /* vec_ramp16  per-vector increment     */
+#define VEC_Q_XORD   "q6"    /* vec_xor16   destination chunk        */
+#define VEC_Q_XORS   "q7"    /* vec_xor16   source chunk             */
+/* All eight are claimed. A new owner must share one, and sharing requires
+ * proving the two never interleave - they are not saved or restored. */
+
 #define VEC_ALIGN __attribute__((aligned(16)))
 #define VEC_BYTES 16
 #define VEC_PIX16 8            /* 16-bit pixels per 128-bit vector */
+
+/*
+ * All five bulk primitives below take a count in whole 128-bit vectors and
+ * return immediately when it is zero. The loops are store-then-decrement, so
+ * a zero count would otherwise wrap to 0xFFFFFFFF and run for hours. No
+ * current caller can pass zero; the guard is one predictable branch per call
+ * against 46 vector stores, and it removes the failure mode rather than
+ * relying on every future caller to have reasoned about it.
+ */
 
 /* dst[0..n16-1] = value, n16 in units of 8 pixels (one vector). */
 void vec_fill16(uint16_t *dst, uint16_t value, uint32_t vectors);
@@ -45,8 +69,16 @@ void vec_copy(void *dst, const void *src, uint32_t vectors);
 /* Zero `vectors` * 16 bytes. */
 void vec_zero(void *dst, uint32_t vectors);
 
-/* dst[i] = start + i*step, i in units of 16-bit lanes. Builds a positionally
- * unique ramp with no scalar per-element work. */
+/*
+ * dst[i] = start + i*step, i in units of 16-bit lanes, with no scalar
+ * per-element work.
+ *
+ * SATURATES. The accumulate is ee.vadds.s16, a signed saturating add, so once
+ * start + i*step passes 32767 every remaining lane pins to 0x7FFF and the ramp
+ * stops being a ramp. Callers wanting a positionally unique pattern must keep
+ * start + (n-1)*step within int16 - selftest.c enforces that with a static
+ * assertion after its probe pattern silently went flat across 72% of each row.
+ */
 void vec_ramp16(uint16_t *dst, uint16_t start, uint16_t step, uint32_t vectors);
 
 /* dst ^= src, 16-bit lanes. */
@@ -60,14 +92,21 @@ void vec_xor16(uint16_t *dst, const uint16_t *src, uint32_t vectors);
  * PASS on a visibly broken display. This covers the whole buffer.
  *
  * WHAT IT CATCHES, given a positionally unique pattern: any wrong value,
- * omission, truncation, or duplication (a duplicate XORs a chunk twice and
- * cancels it, changing the result).
- * WHAT IT MISSES: an exact reordering of whole 128-bit chunks within a single
- * transfer. DMA reads descriptors sequentially, so that is not a failure mode
- * here - but it is a real limit and is stated rather than glossed over.
+ * omission, truncation, duplication, displacement or reordering.
+ * WHAT IT MISSES: a transfer that ends MID-WORD zero-pads its tail into a word
+ * of its own, which makes the digest depend on where transfers were cut. Every
+ * length this project transmits is a whole number of words, so that does not
+ * arise - but it is a real limit and is stated rather than glossed over.
+ *
+ * Implementation and its full failure history are in fold.c, which the host
+ * test harness compiles and asserts against directly.
+ *
+ * LENGTH IS IN BYTES, not vectors. It took vectors until the ledger was found
+ * to be computing `len / VEC_BYTES` and silently discarding up to 15 trailing
+ * bytes of every transfer whose length was not a multiple of 16.
  */
 void     vec_fold_reset(void);
-void     vec_fold(const void *p, uint32_t vectors);
+void     vec_fold(const void *p, uint32_t bytes);
 uint32_t vec_fold_get(void);
 
 #endif /* VEC_H */

@@ -70,28 +70,47 @@
 
 /* ---- transmit ledger: on-device verification, no human required ---- */
 static uint32_t g_led_bytes;
+static uint32_t g_led_pixel_bytes;
 static uint32_t g_led_digest;
+static int      g_led_digest_on;   /* off by default: see spi2.h */
 
-void     spi2_ledger_reset(void)  { g_led_bytes = 0u; g_led_digest = 0u; vec_fold_reset(); }
-uint32_t spi2_ledger_bytes(void)  { return g_led_bytes; }
-uint32_t spi2_ledger_digest(void) { return g_led_digest; }
+void spi2_ledger_digest_enable(int on) { g_led_digest_on = on; }
+
+void spi2_ledger_reset(void)
+{
+    g_led_bytes = 0u;
+    g_led_pixel_bytes = 0u;
+    g_led_digest = 0u;
+    vec_fold_reset();
+}
+
+uint32_t spi2_ledger_bytes(void)       { return g_led_bytes; }
+uint32_t spi2_ledger_pixel_bytes(void) { return g_led_pixel_bytes; }
+uint32_t spi2_ledger_digest(void)      { return g_led_digest; }
 
 /*
  * Records what the hardware was actually told to send.
  *
- * The count catches structure - truncation, duplication, missing transfers.
- * vec_fold() covers EVERY byte, which the previous version did not: it sampled
- * only the first and last byte, and for solid-colour rows that is blind to the
- * whole payload. It reported PASS on a visibly broken display.
+ * The count catches structure - truncation, duplication, missing transfers -
+ * and is cheap enough to leave on. vec_fold() covers EVERY byte, which two
+ * earlier versions did not: one sampled the first and last byte only (blind to
+ * a solid-colour payload, and it reported PASS on a visibly broken display),
+ * the other folded len/VEC_BYTES and discarded any trailing partial vector.
+ * It is now length-in-bytes and exact - but it is O(n), so it is armed only
+ * when something is going to read it.
+ *
+ * Pixel payload and command preamble are counted SEPARATELY. Only pixels are
+ * digested, so a reference computed from pixel rows alone compares directly
+ * against spi2_ledger_pixel_bytes() and spi2_ledger_digest() with no magic
+ * preamble constant to keep in step.
  */
 static void ledger_add(const uint8_t *d, uint32_t len, int is_pixels)
 {
     g_led_bytes += len;
-    /* Only pixel payload is digested. Command preamble - window registers and
-     * the memory-write word - is structure, counted but not folded, so a
-     * reference computed from pixel rows alone can be compared directly. */
     if (!is_pixels) return;
-    vec_fold(d, len / (uint32_t)VEC_BYTES);      /* whole 128-bit chunks */
+    g_led_pixel_bytes += len;
+    if (!g_led_digest_on) return;
+    vec_fold(d, len);
     g_led_digest = vec_fold_get();
 }
 
@@ -273,7 +292,15 @@ int spi2_write(const uint8_t *data, uint32_t len, int quad)
  * DMA path actually shipped. A duplicated band shows up as a doubled count. */
 static const gdma_desc *g_inflight;
 static uint32_t         g_inflight_len;
-static const uint8_t   *g_inflight_buf;
+static int              g_inflight_pixels;   /* quad => pixel payload */
+
+/* Descriptor length field: dw0 bits 12..23 - the byte count the engine will
+ * actually transmit from that descriptor's buffer. */
+#define DESC_LEN(dw0) (((dw0) >> 12) & 0xFFFu)
+
+/* Bound the walk. A malformed or cyclic `next` must not hang the device; the
+ * longest legitimate chain is DESCS_PER_BAND (8) and 64 is generous. */
+#define DESC_CHAIN_MAX 64u
 
 int spi2_dma_start(const struct gdma_desc *chain, uint32_t len, int quad, int keep_cs)
 {
@@ -295,9 +322,9 @@ int spi2_dma_start(const struct gdma_desc *chain, uint32_t len, int quad, int ke
     /* ORDER: DMA link first, then apply config, then trigger. Applying config
      * before starting the link left the engine parked on the first transfer -
      * see docs/DESIGN.md 6.6i. */
-    g_inflight     = (const gdma_desc *)chain;
-    g_inflight_len = len;
-    g_inflight_buf = (const uint8_t *)((const gdma_desc *)chain)->buffer;
+    g_inflight        = (const gdma_desc *)chain;
+    g_inflight_len    = len;
+    g_inflight_pixels = quad;
 
     /* ARM TWICE, TRIGGER ONCE.
      *
@@ -341,7 +368,36 @@ int spi2_dma_finish(void)
         SPI_DMA_CONF = 0u;
         return SPI2_E_DMA;
     }
-    ledger_add(g_inflight_buf, g_inflight_len, 1);
+    /*
+     * WALK THE CHAIN. The previous version folded g_inflight_len bytes starting
+     * at the FIRST descriptor's buffer, which is only correct while the chain
+     * happens to describe one contiguous allocation. band_chain() does carve a
+     * single g_band[] array, so it produced the right answer - but any
+     * scatter-gather chain would have digested memory that was never sent while
+     * reporting a clean PASS, which is the exact failure mode this instrument
+     * exists to catch. Each descriptor now accounts for its own buffer and its
+     * own length field.
+     */
+    {
+        const gdma_desc *d = g_inflight;
+        uint32_t seen = 0u, total = 0u;
+        while (d != NULL && seen < DESC_CHAIN_MAX) {
+            uint32_t n = DESC_LEN(d->dw0);
+            ledger_add((const uint8_t *)d->buffer, n, g_inflight_pixels);
+            total += n;
+            seen++;
+            d = d->next;
+        }
+        /* The chain's own lengths must add up to what SPI was told to send.
+         * They are set from the same figures a few lines apart, so a mismatch
+         * means one of them was computed wrong - report rather than absorb. */
+        if (total != g_inflight_len) {
+            SPI_MISC = MISC_CS1_DIS | MISC_CS2_DIS;   /* release CS */
+            (void)spi2_sync();
+            SPI_DMA_CONF = 0u;
+            return SPI2_E_LEN;
+        }
+    }
     SPI_DMA_CONF = 0u;
     return SPI2_OK;
 }

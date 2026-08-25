@@ -59,16 +59,32 @@ void spi2_cs_release(void);
  * project several wrong conclusions.
  *
  * What CAN be verified on-device is what the hardware was actually told to
- * send. The ledger counts bytes handed to the peripheral and accumulates a
- * cheap order-sensitive digest of them. A caller that knows what it intended
- * can then assert it - catching truncation, duplication and reordering, which
- * is precisely the failure class the banded DMA path exhibited.
+ * send. The ledger counts bytes handed to the peripheral and, when armed,
+ * accumulates an order-sensitive digest of them. A caller that knows what it
+ * intended can then assert it - catching truncation, duplication and
+ * reordering, which is precisely the failure class the banded DMA path
+ * exhibited.
  *
- * Cost is O(1) per transfer, not per byte.
+ * COUNTING is O(1) per transfer and always on.
+ *
+ * DIGESTING is O(1) per BYTE and off by default. This header used to claim the
+ * whole ledger was O(1) per transfer; it was not. vec_fold() ran over every
+ * pixel byte of every transfer in steady state - roughly 184 words per row,
+ * ~0.8 ms on a 104-row update - so a verification instrument nothing read
+ * outside the self-test was charging the render loop about 12% of its budget
+ * forever. Arm it for the self-test, leave it off to ship.
  */
-/* Reset also clears the content digest. */
+void     spi2_ledger_digest_enable(int on);
+
+/* Reset also clears the content digest and its position weight. It does NOT
+ * change whether the digest is armed. */
 void     spi2_ledger_reset(void);
 uint32_t spi2_ledger_bytes(void);
+
+/* Pixel payload only - command preamble is counted by spi2_ledger_bytes() but
+ * excluded here, so a caller can compare against a reference computed from
+ * pixel rows alone without knowing the preamble's size. */
+uint32_t spi2_ledger_pixel_bytes(void);
 uint32_t spi2_ledger_digest(void);
 
 /* Clock-gate, reset, route pins through the GPIO matrix, configure mode 0. */
