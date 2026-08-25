@@ -13,9 +13,18 @@
 
 /* A representative interface: a static background with one moving element.
  * This is what real UIs look like - almost nothing changes between frames. */
-/* 24 rows of 448 on a 1.8-inch panel is ~1.7mm - at the top edge it reads as
- * "nothing there". Big enough to be unambiguous. */
+/* 96 rows of 448 on a 1.8-inch panel is ~7mm. The first version used 24 rows
+ * (~1.7mm), which at the top edge read as "nothing there" and cost a round of
+ * misdiagnosis; this is big enough to be unambiguous. Every position and span
+ * below is derived from BAR_H - the demo used to repeat 96 and 95 as literals,
+ * so changing this constant silently broke the erase/draw pairing. */
 #define BAR_H 96
+#define BAR_TRAVEL (SH8601_HEIGHT - BAR_H)
+
+/* 3 s stationary, then 20 s with the rolling resync disabled. See the note at
+ * the pacing loop for why the second one is the load-bearing test. */
+#define STATIONARY_FRAMES 180u
+#define RESYNC_OFF_FRAMES 1200u
 static int g_bar_y;
 
 static void scene(uint16_t *row, int y)
@@ -57,8 +66,40 @@ void app_entry(void)
     con_puts("sh8601_init rc="); con_dec((int32_t)rc); con_puts("\r\n");
 
     selftest_liveness();
-    if (selftest_transport() != 0) con_puts("SELF-TEST FAILED\r\n");
-    else                           con_puts("SELF-TEST PASSED\r\n");
+    /* Print the RETURN VALUE, not a second copy of selftest.c's own verdict.
+     * The two used to be identical strings, which hid the fact that the return
+     * value was a shadowed variable folded to a constant 0 - the console said
+     * PASSED twice while the function was incapable of saying anything else.
+     * Distinct now, so the two disagreeing is visible rather than invisible. */
+    rc = selftest_transport();
+    con_puts("selftest_transport rc="); con_dec((int32_t)rc);
+    con_puts(rc == 0 ? " (0 failures)\r\n" : " <-- FAILURES\r\n");
+
+    /*
+     * ONE FULL REPAINT, TIMED, ON THE TRANSPORT THAT SHIPS.
+     *
+     * README's performance table mixes two transports: 0.037 ms/row is banded
+     * DMA wire time, while the 104-row / 7.1 ms figure is FIFO. They disagree
+     * by about 2x - 0.037 x 104 = 3.9 ms, not 7.1 - and "All 448 rows are
+     * updatable at 60 Hz" is a claim about DMA, which is parked. The project's
+     * own rule is to measure rather than extrapolate, so measure it.
+     */
+    {
+        const sh8601_stats *s;
+        uint32_t fps10;
+        g_bar_y = SH8601_HEIGHT / 2 - BAR_H / 2;
+        rc = sh8601_write_frame(scene);
+        s  = sh8601_last_frame();
+        fps10 = (s->total_cycles == 0u) ? 0u
+              : (uint32_t)(((uint64_t)CPU_HZ * 10u) / s->total_cycles);
+        con_puts("\r\nfull repaint, FIFO, 448 rows: rc=");
+        con_dec((int32_t)rc);
+        con_puts(" total="); put_ms(s->total_cycles);
+        con_puts("render="); put_ms(s->render_cycles);
+        con_puts("flush=");  put_ms(s->flush_cycles);
+        con_puts("-> "); con_dec((int32_t)(fps10 / 10u)); con_putc('.');
+        con_dec((int32_t)(fps10 % 10u)); con_puts(" fps full-frame\r\n");
+    }
 
     /* ---------------- gfx: retained-mode messaging layer ---------------- */
     gfx_init();
@@ -86,12 +127,13 @@ void app_entry(void)
         int prev = -1;
         con_puts("  animating - layer derives dirty rows itself\r\n");
         for (i = 0; i < 240; i++) {
-            int by = (i * 4) % (SH8601_HEIGHT - 96);
+            int by = (i * 4) % BAR_TRAVEL;
             uint32_t changed;
 
-            if (prev >= 0) (void)gfx_solid((uint16_t)prev, (uint16_t)(prev + 95),
+            if (prev >= 0) (void)gfx_solid((uint16_t)prev,
+                                           (uint16_t)(prev + BAR_H - 1),
                                            sh8601_rgb565(0, 20, 60));
-            changed = gfx_solid((uint16_t)by, (uint16_t)(by + 95),
+            changed = gfx_solid((uint16_t)by, (uint16_t)(by + BAR_H - 1),
                                 sh8601_rgb565(255, 70, 0));
             prev = by;
 
@@ -100,6 +142,7 @@ void app_entry(void)
             if ((i % 60) == 0) {
                 const gfx_stats *g = gfx_last();
                 con_puts("   changed="); con_dec((int32_t)changed);
+                con_puts(" model="); con_dec((int32_t)g->rows_changed);
                 con_puts(" sent="); con_dec((int32_t)g->rows_sent);
                 con_puts(" spans="); con_dec((int32_t)g->spans);
                 con_puts(" "); put_ms(g->cycles); con_puts("\r\n");
@@ -121,12 +164,61 @@ void app_entry(void)
      * whatever the interface actually wants to do.
      */
     g_bar_y = SH8601_HEIGHT / 2 - BAR_H / 2;   /* start centred, not at the edge */
+
+    /*
+     * Full repaint before the pacing loop takes over.
+     *
+     * The gfx demo leaves a blue background on the panel; scene() draws black.
+     * Without this the first paced frame marks only the bar's rows and the old
+     * background survives underneath - repaired a few frames later by the
+     * rolling resync, which is why it was never noticed. With the resync
+     * switched off below it would sit there for twenty seconds and look
+     * exactly like a marking bug.
+     */
+    elide_reset();
     {
     uint32_t period = CPU_HZ / 60u;      /* cycles in one 60 Hz frame */
     uint32_t next   = cpu_cycles();
     uint32_t late   = 0u;
+    /*
+     * TAKE THE SAFETY NET DOWN, ON PURPOSE.
+     *
+     * elide.h documents elide_set_resync(0) as exactly this test: "If the
+     * display stays correct with resync off, the tracking is genuinely right
+     * rather than merely being repaired often enough to look right." Until now
+     * nothing called it - --gc-sections dropped it from the image entirely, so
+     * the escape hatch had never once been pulled.
+     *
+     * It matters because the rolling resync rewrites the whole screen every
+     * 112 frames (~1.9 s) while the bar completes a traversal every 88 frames
+     * (~1.5 s). A marking leak is therefore scrubbed at about the rate it
+     * accumulates, and a clean screen proves nothing over a short watch. That
+     * is precisely how the g_bar_prev bug hid (DESIGN.md 6.6k): it "only became
+     * visible with the safety net switched off".
+     *
+     * 20 s with the net down is ~13 wraps. A leak at the wrap - the documented
+     * failure - would stack visibly.
+     */
+    /* UNSIGNED. This ran forever on a signed int, so at 60 Hz it reached
+     * INT_MAX in about 414 days and the increment became undefined behaviour -
+     * which -Os is entitled to assume never happens when folding `i % 60`.
+     * Unsigned wraparound is defined, and the counter is only used for
+     * modular reporting. */
+    uint32_t f;
+    int net_off = 0, wrapped = 0;
 
-    for (i = 0; ; i++) {
+    for (f = 0u; ; f++) {
+        if (f == STATIONARY_FRAMES) {
+            elide_set_resync(0u);
+            net_off = 1;
+            con_puts("\r\n*** resync OFF: dirty tracking stands alone for 20s"
+                     " - any leak now accumulates ***\r\n");
+        }
+        if (f == STATIONARY_FRAMES + RESYNC_OFF_FRAMES) {
+            elide_set_resync(ELIDE_RESYNC_FRAMES);
+            net_off = 0;
+            con_puts("*** resync back ON ***\r\n");
+        }
         const elide_stats *e;
         uint32_t fps10, budget10;
 
@@ -134,19 +226,27 @@ void app_entry(void)
          *
          * The previous version marked g_bar_prev, which held the position from
          * TWO frames ago. It only worked by accident: with a 4px step and a
-         * 24px bar, consecutive positions overlap so heavily that the union
+         * 96px bar, consecutive positions overlap so heavily that the union
          * covered the gap anyway. At the wrap the positions stop being
          * adjacent, the cover fails, and red is left behind permanently.
          *
          * Resync hid this completely - every 120 frames scrubbed the evidence.
          * It only became visible with the safety net switched off. */
         {
-            /* First 180 frames (3s at 60Hz): bar STATIONARY. If the screen
+            /* First STATIONARY_FRAMES (3s at 60Hz): bar STATIONARY. If the screen
              * shows one clean bar on black, the window/write path is correct
              * and any smearing afterwards is a MARKING problem. */
-            int step  = (i < 180) ? 0 : 4;
+            int step  = (f < STATIONARY_FRAMES) ? 0 : 4;
             int old_y = g_bar_y;
-            int new_y = (g_bar_y + step) % (SH8601_HEIGHT - BAR_H);
+            int new_y = (g_bar_y + step) % BAR_TRAVEL;
+            /* THE WRAP IS THE FAILURE POINT. Everywhere else consecutive bar
+             * positions overlap by 92 of 96 rows, so even a badly wrong mark
+             * gets covered by its neighbour. At the wrap old and new stop being
+             * adjacent, the cover fails, and a marking bug leaves red behind -
+             * which is exactly what DESIGN.md 6.6k records. Trace it explicitly
+             * rather than hoping the every-60-frames telemetry lands on one:
+             * the bar wraps every 88 frames, so it mostly does not. */
+            wrapped = (new_y < old_y);
             elide_mark(old_y, old_y + BAR_H - 1);   /* erase */
             elide_mark(new_y, new_y + BAR_H - 1);   /* draw  */
             g_bar_y = new_y;
@@ -175,15 +275,23 @@ void app_entry(void)
             next = cpu_cycles();
         }
 
+        if (wrapped) {
+            con_puts("  WRAP f=");   con_dec((int32_t)f);
+            con_puts(" rows=");      con_dec((int32_t)e->rows_sent);
+            con_puts(" spans=");     con_dec((int32_t)e->spans);
+            con_puts(" expect rows=192 spans=2");
+            con_puts(net_off ? "  [resync OFF]\r\n" : "  [resync on]\r\n");
+        }
+
         /* Trace the first frames: what did we mark, what got sent? */
-        if (i < 6) {
-            con_puts("  f"); con_dec((int32_t)i);
+        if (f < 6u) {
+            con_puts("  f"); con_dec((int32_t)f);
             con_puts(" bar_y="); con_dec((int32_t)g_bar_y);
             con_puts(" rows="); con_dec((int32_t)e->rows_sent);
             con_puts(" spans="); con_dec((int32_t)e->spans);
             con_puts("\r\n");
         }
-        if ((i % 60) == 0) {
+        if ((f % 60u) == 0u) {
             fps10    = (e->cycles == 0u) ? 0u
                      : (uint32_t)(((uint64_t)CPU_HZ * 10u) / e->cycles);
             /* How many such updates fit in one 60Hz frame period. */
@@ -197,7 +305,13 @@ void app_entry(void)
             con_dec((int32_t)(fps10 % 10u)); con_puts(" fps | ");
             con_dec((int32_t)(budget10 / 10u)); con_putc('.');
             con_dec((int32_t)(budget10 % 10u)); con_puts("x | late=");
-            con_dec((int32_t)late); con_puts("\r\n");
+            con_dec((int32_t)late);
+            /* Where the time actually goes. sh8601 measures this per span and
+             * elide sums it across the frame; before that it was computed every
+             * span and read by nobody. */
+            con_puts(" | render="); put_ms(e->render_cycles);
+            con_puts("flush=");     put_ms(e->flush_cycles);
+            con_puts(net_off ? "| resync=OFF\r\n" : "| resync=on\r\n");
         }
     }
     }
