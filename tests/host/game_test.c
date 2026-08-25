@@ -85,6 +85,18 @@ int main(void)
         }
         { int q; for (q = 0; q < H; q++) g_sent_row[q] = 0; }
         if (APP.frame((uint32_t)f) != 0) bad_rc++;
+
+        /*
+         * Present the SAME frame again, through elision, into the panel model.
+         *
+         * gridvoid ships full-frame presents while the span-boundary leak is
+         * unexplained, but vg_present is still the code that would be used the
+         * day that is fixed, and an untested present is how a regression waits.
+         * vg_finish is idempotent and the row walk is non-destructive, so this
+         * is genuinely the same frame, not a re-simulation of it.
+         */
+        vg_finish();
+        if (vg_present() != 0) bad_rc++;
         if (vg_count() > worst_segs) worst_segs = vg_count();
 
         /*

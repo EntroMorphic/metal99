@@ -11,7 +11,8 @@
 typedef struct {
     int16_t  ybot;        /* last row this segment appears on, inclusive */
     int16_t  ytop;        /* first row, inclusive                        */
-    int32_t  x;           /* 16.16 x at the current row                  */
+    int32_t  x;           /* 16.16 x at the segment's FIRST row          */
+    int32_t  xr;          /* 16.16 x at the row being walked now          */
     int32_t  dxdy;        /* 16.16 x step per row (or full dx if flat)   */
     uint16_t colour;
     int16_t  next;        /* index into g_seg, -1 = end of list          */
@@ -25,23 +26,21 @@ typedef struct {
  * nothing - it lands in padding the struct already had, which a static assert
  * below keeps true - and vg_finish is now idempotent, which is what a test
  * that wants to render the same frame twice actually needs.
+ *
+ * `xr` is the same story with a price. The walk used to advance `x` in place,
+ * which CONSUMED the frame: a second walk drew every segment from wherever the
+ * first left it. Invisible on device, where nothing re-renders a frame, and
+ * fatal to the only test that can prove eliding rows changes nothing. Holding
+ * the running value in a separate ARRAY fixed correctness but cost an extra
+ * base register in the innermost loop - 0.4 ms a frame, enough to push a 40 Hz
+ * app past its deadline. As a field it is one deref through a pointer the loop
+ * already holds. The struct grows 16 -> 20 bytes, 10 KB of BSS for the segment
+ * pool, which this memory map has in abundance and that deadline does not.
  */
-typedef char vg_seg_still_fits[(sizeof(vseg) <= 16) ? 1 : -1];
+typedef char vg_seg_still_fits[(sizeof(vseg) <= 20) ? 1 : -1];
 
 static vseg     g_seg[VG_MAX_SEGS];
-/*
- * The running x of each active segment, 16.16, reset by vg_finish from the
- * segment's starting x.
- *
- * It used to live in g_seg[].x, which vg_rowfn advanced in place - so a walk
- * CONSUMED the frame and a second walk rendered the segments from wherever the
- * first one left them, silently and wrongly. Nothing on the device re-renders
- * a frame, so this never showed there; it showed the moment a test tried to
- * render one frame two ways to check them against each other, which is the
- * only way to verify that eliding rows changes nothing about the picture.
- * Same memory traffic on the hot path, one array instead of one field.
- */
-static int32_t  g_x[VG_MAX_SEGS];
+
 static int      g_nseg;
 static int16_t  g_bucket[H];      /* head index of segments starting on a row */
 static int16_t  g_active;         /* head of the active list                 */
@@ -119,21 +118,15 @@ void vg_finish(void)
     int i, y;
 
     for (y = 0; y < H; y++) g_bucket[y] = -1;
-    for (i = 0; i < LWORDS; i++) g_lit[i] = 0u;
     /* Reverse order so the bucket ends up in insertion order; the picture does
      * not depend on it, but a stable order makes a rendered frame reproducible
      * and therefore comparable between runs. */
     for (i = g_nseg - 1; i >= 0; i--) {
         int top = g_seg[i].ytop;
-        int bot = g_seg[i].ybot;
-        /* vg_line clamps both ends to the panel, so this cannot run off the
-         * bitmap - but it is indexing an array with numbers it did not choose,
-         * which is the shape of bug this file has already had once. */
-        for (y = top; y <= bot; y++) g_lit[y >> 5] |= 1u << (y & 31);
         g_seg[i].next = g_bucket[top];
         g_bucket[top] = (int16_t)i;
     }
-    for (i = 0; i < g_nseg; i++) g_x[i] = g_seg[i].x;
+    for (i = 0; i < g_nseg; i++) g_seg[i].xr = g_seg[i].x;
     g_active = -1;
     g_cur    = 0;
 }
@@ -164,7 +157,7 @@ void vg_rowfn(uint16_t *row, int y)
                          g_active = j; j = nx; }
         j = g_active; prev = -1;
         while (j >= 0) {
-            g_x[j] += g_seg[j].dxdy;
+            g_seg[j].xr += g_seg[j].dxdy;
             if (g_seg[j].ybot <= g_cur) {
                 if (prev < 0) g_active = g_seg[j].next;
                 else g_seg[prev].next = g_seg[j].next;
@@ -184,8 +177,8 @@ void vg_rowfn(uint16_t *row, int y)
     i = g_active; prev = -1;
     while (i >= 0) {
         vseg *s = &g_seg[i];
-        int xa = (int)(g_x[i] >> 16);
-        int xb = (int)((g_x[i] + s->dxdy) >> 16);
+        int xa = (int)(s->xr >> 16);
+        int xb = (int)((s->xr + s->dxdy) >> 16);
         int t, x;
 
         if (xa > xb) { t = xa; xa = xb; xb = t; }
@@ -196,7 +189,7 @@ void vg_rowfn(uint16_t *row, int y)
          * bulk fill above is where the vector unit earns its place. */
         for (x = xa; x <= xb; x++) row[x] = s->colour;
 
-        g_x[i] += s->dxdy;
+        s->xr += s->dxdy;
         if (s->ybot <= y) {
             if (prev < 0) g_active = s->next;
             else g_seg[prev].next = s->next;
@@ -216,7 +209,7 @@ static int row_wanted(int y)
 
 int vg_present(void)
 {
-    int y = 0, i, rc;
+    int y, i, rc;
 
     /*
      * The first frame repaints everything. elide's model of the panel starts
@@ -225,6 +218,23 @@ int vg_present(void)
      * here means a vector app is correct whether or not it also uses gfx.
      */
     if (!g_presented) { elide_reset(); g_presented = 1; }
+
+    /*
+     * Build the lit-row map HERE, not in vg_finish.
+     *
+     * It lived in vg_finish and cost every caller, including the ones that
+     * present a full frame and never read it - which put ~0.7 ms on a path
+     * that had none of the benefit and pushed a 40 Hz app into missing every
+     * deadline. Work belongs to the function that needs it.
+     */
+    for (i = 0; i < LWORDS; i++) g_lit[i] = 0u;
+    for (i = 0; i < g_nseg; i++) {
+        int top = g_seg[i].ytop, bot = g_seg[i].ybot;
+        /* vg_line clamps both ends to the panel, so this cannot run off the
+         * bitmap - but it is indexing an array with numbers it did not choose,
+         * which is the shape of bug this file has already had once. */
+        for (y = top; y <= bot; y++) g_lit[y >> 5] |= 1u << (y & 31);
+    }
 
     /*
      * FULL-WIDTH MARKS, deliberately, though elide_mark_rect is right there.
@@ -250,6 +260,7 @@ int vg_present(void)
      * many short ones - so the heuristic was removed rather than kept as
      * complexity with a plausible story and no effect.
      */
+    y = 0;
     while (y < H) {
         if (row_wanted(y)) {
             int y0 = y;

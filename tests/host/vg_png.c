@@ -46,6 +46,14 @@ static void flush_frame(void)
     }
 }
 
+
+/* vg.c reaches into elide from vg_present(); this harness renders rows and
+ * never presents. Stubs, so the picture path links without dragging in the
+ * whole transport. */
+void elide_reset(void) {}
+void elide_mark(int y0, int y1) { (void)y0; (void)y1; }
+int  elide_flush(void (*rowfn)(uint16_t *row, int y)) { (void)rowfn; return 0; }
+
 int main(void)
 {
     const uint16_t CYAN = 0x1F7Fu, AMBER = 0x00FDu, GREEN = 0xE007u;

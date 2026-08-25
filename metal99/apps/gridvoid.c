@@ -367,7 +367,28 @@ static int game_frame(uint32_t f)
     number(g_wave, SH8601_WIDTH - 30, 40, 10, 16, 1, C_GRID);
 
     vg_finish();
-    return vg_present();
+    /*
+     * FULL FRAME, NOT vg_present(), AND THAT IS A RETREAT.
+     *
+     * Presenting through elision is correct - game_test proves the elided
+     * panel is pixel-identical to a full repaint across 6000 frames - but it
+     * turned one span per frame into ~3, and debris appeared on the glass
+     * after touch, which fragments the marked set further. spi2.h has said
+     * since the day it was written that the span-boundary leak "gets worse the
+     * more spans a frame contains". This app was the one workload that never
+     * hit it, because it always sent exactly one span. Now it does.
+     *
+     * A single-span mark (first lit row to last) would keep the boundary count
+     * at one, but the HUD sits at row 10 and the grid reaches row 447, so that
+     * covers 98% of the screen and saves nothing. For THIS scene, elision and
+     * one span are mutually exclusive.
+     *
+     * So the transport bug is what blocks it, not the marking. vg_present()
+     * stays, tested and correct, for scenes whose lit rows are actually
+     * clustered - and this line is the one to change back the day the leak is
+     * understood. Artifacts are worse than 21% of the rows.
+     */
+    return sh8601_write_frame(vg_rowfn);
 }
 
 /*
@@ -401,4 +422,4 @@ static int game_frame(uint32_t f)
  * setups. 3.1 spans per frame with it and without; worst frame unchanged. It
  * was removed rather than kept as a plausible story with no effect.
  */
-const app_t APP = { "gridvoid", 36u, game_init, game_frame, game_event };
+const app_t APP = { "gridvoid", 40u, game_init, game_frame, game_event };
