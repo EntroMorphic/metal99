@@ -322,8 +322,11 @@ int main(void)
         stub_reset();
         (void)gfx_text(0, 0, 100, "B", FG, F);
         (void)gfx_present();
-        check(marked(100, &a, &b) && a == 0 && b == W - 1,
-              "changed text marks its full rows (see gfx.c: span-count workaround)");
+        /* Its own columns, NOT full width. Labels marked full rows for as long
+         * as the span-boundary leak was unexplained; the leak was a too-narrow
+         * AFIFO reset pulse (spi2_flush_afifo) and the 1.8x is back. */
+        check(marked(100, &a, &b) && a == 0 && b < W - 1,
+              "changed text marks its own columns, not the whole row");
         /* Expressed via the constant rather than a literal, so the padding can
          * change without silently making this assertion vacuous. */
         check(!marked(99, &a, &b) &&
@@ -339,15 +342,21 @@ int main(void)
         stub_reset();
         (void)gfx_text(0, 64, 200, "Hi", FG, F);
         (void)gfx_present();
-        check(marked(205, &a, &b) && a == 0 && b == W - 1,
-              "a moved label marks full rows at both positions");
+        /* Old position at x=0 and new at x=64 are unioned into one row extent,
+         * so it spans from the old left edge to the new right edge - and still
+         * stops well short of the panel. */
+        check(marked(205, &a, &b) && a == 0 && b < W - 1,
+              "a moved label marks both positions, still not the whole row");
 
         /* Clearing repaints the background where it was. */
         stub_reset();
         (void)gfx_text_clear(0);
         (void)gfx_present();
-        check(marked(205, &a, &b) && a == 0 && b == W - 1,
-              "clearing a label marks the rows where it was");
+        /* The label was moved to x=64 before this, so the clear marks exactly
+         * the columns it occupied there - 64..79 for "Hi" - and nothing else.
+         * Under the old full-width workaround this row cost 368 columns. */
+        check(marked(205, &a, &b) && a == 64 && b < 128,
+              "clearing a label marks only the columns where it was");
         stub_render(205, g_row);
         check(g_row[64] == BG && g_row[70] == BG,
               "  and the row renders as pure background again");
