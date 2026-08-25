@@ -44,6 +44,18 @@ typedef struct {
     uint32_t bytes;          /* pixel bytes transmitted               */
     uint32_t cycles;         /* whole update                          */
     uint32_t resync_rows;    /* rows added by the rolling resync      */
+    /*
+     * Render / flush split, summed over every span in the update.
+     *
+     * sh8601 measures these per SPAN and elide issues several spans per frame,
+     * so the per-span figures were overwritten before anyone could read them -
+     * and nothing read them anyway: sh8601_last_frame() was dropped by
+     * --gc-sections, meaning two cpu_cycles() pairs ran on the hot path each
+     * span to fill a struct with no consumer. Accumulating here is what makes
+     * that measurement mean something at frame scale.
+     */
+    uint32_t render_cycles;  /* time inside the caller's rowfn        */
+    uint32_t flush_cycles;   /* time pushing bytes to the panel       */
 } elide_stats;
 
 void elide_init(void);

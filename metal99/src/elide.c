@@ -63,9 +63,11 @@ int elide_flush(void (*rowfn)(uint16_t *row, int y))
         g_frames++;
     }
 
-    g_stats.rows_sent = 0u;
-    g_stats.spans     = 0u;
-    g_stats.bytes     = 0u;
+    g_stats.rows_sent     = 0u;
+    g_stats.spans         = 0u;
+    g_stats.bytes         = 0u;
+    g_stats.render_cycles = 0u;
+    g_stats.flush_cycles  = 0u;
 
     while (y < ROWS) {
         int y0, y1;
@@ -80,8 +82,19 @@ int elide_flush(void (*rowfn)(uint16_t *row, int y))
         y1 = y - 1;
 
         rc = sh8601_write_span((uint16_t)y0, (uint16_t)y1, rowfn);
-        if (rc != SPI2_OK) return rc;
+        if (rc != SPI2_OK) {
+            /* Record the cost of the attempt too. Leaving cycles at the
+             * previous frame's value made a failing frame look like a healthy
+             * one in the telemetry. */
+            g_stats.cycles = cpu_cycles() - t0;
+            return rc;
+        }
 
+        {
+            const sh8601_stats *s = sh8601_last_frame();
+            g_stats.render_cycles += s->render_cycles;
+            g_stats.flush_cycles  += s->flush_cycles;
+        }
         g_stats.spans++;
         g_stats.rows_sent += (uint32_t)(y1 - y0 + 1);
         g_stats.bytes     += (uint32_t)(y1 - y0 + 1) * SH8601_WIDTH * 2u;
