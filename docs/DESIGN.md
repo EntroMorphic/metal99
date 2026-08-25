@@ -158,7 +158,8 @@ layer that touches bulk data.
 > `render_c99.c` application layer. None of those exist. That was the Milestone-2
 > *plan* (§7), and what actually shipped is `gfx.c`: 101 lines keeping a 448-row
 > descriptor model, because there is no framebuffer to replay a command list
-> into and 322 KB will not fit in 192 KB of DRAM. The diagram was never updated
+> into — and there is none because the panel is wire-bound, not because one
+> would not fit (§5.1). The diagram was never updated
 > when the plan changed, so this document described an architecture the code had
 > not had for some time.
 
@@ -296,6 +297,61 @@ Total internal SRAM: **512 KB**. Our linker regions claim 320 KB of it.
 Headroom allows a larger band (128 rows = 92 K) or a full 368x448 framebuffer
 in SRAM (322 K) if a persistent surface is ever needed — though that would
 crowd out everything else and is not planned.
+
+### 5.1 A framebuffer would fit. That is not why we do not have one.
+
+Measured 2026-08-24, because "322 KB will not fit in 192 KB of DRAM" had been
+repeated in README, `gfx.h` and §3 as the justification for the retained-model
+design, and it is **false**.
+
+The 192 KB is a line in `link.ld`, not silicon. The ESP32-S3 has 480 KB of
+DRAM-addressable SRAM (SRAM1 0x3FC8_8000-0x3FCF_0000 plus SRAM2 to
+0x3FD0_0000). The script claims 192 KB and uses 52. IRAM claims 128 KB for
+8 KB of code.
+
+| | |
+|---|---|
+| DRAM-addressable total | 480 KB |
+| Declared in `link.ld` | 192 KB (52 used) |
+| Unclaimed above it, below the ROM stack floor `0x3FCE9700` | 69 KB |
+| Recoverable by right-sizing IRAM to 16 KB | ~112 KB |
+| **Usable** | **373 KB** |
+| Framebuffer 368x448x2, plus non-band `.bss` | 328 KB |
+
+**It fits, with 45 KB spare.** (Arithmetic against the ROM stack floor taken
+from `link.ld`'s own comment; not a tested link.)
+
+The real reason is §3.0: the panel is **wire-bound**. A framebuffer does not
+reduce bytes on the bus, so it would cost 322 KB and buy nothing. What reduces
+bytes is knowing what did not change - a 1,792-byte model, 184x smaller than the
+thing it replaces.
+
+#### If a framebuffer is ever wanted anyway
+
+It would be for something the row-descriptor model cannot express: per-pixel
+diffing, alpha blending, read-modify-write compositing. Costs, measured:
+
+| representation | size | expand cost |
+|---|---|---|
+| raw RGB565 | 322 KB | none |
+| 8bpp indexed | 161 KB | 8 instr/px scalar, ~22 us/row (+32% on a 69 us row) |
+| 4bpp indexed | 80 KB | 10.5 instr/px vectorised - worse than scalar |
+| **2bpp indexed** | **41 KB** | **3 instr/px vectorised, ~6.9 us/row (+10%)** |
+
+Palette expansion IS vectorisable, contrary to an earlier claim here: PIE has no
+gather, but `ee.vcmp.eq.s16` + `ee.andq` + `ee.orq` is a complete select, and
+walking the index down with `ee.vsubs.s16` needs only one compare constant.
+Cost is `(5N + 4)` instructions per 8 pixels, linear in palette size N, so it
+beats the 8 instr/px scalar path **below ~12 entries** and loses above.
+
+Two ISA facts cap it, both probed with `tools/isa_probe.sh` on gcc 14.2.0:
+**no permute/gather** (`ee.vperm`, `ee.vtbl`, `ee.vshuf`, `ee.vgather`,
+`ee.vsel`, `ee.vlut` all fail to assemble - a PSHUFB-equivalent would make a
+16-entry lookup one instruction) and **no 16-bit vector shifts** (only
+`ee.vsl.32`/`ee.vsr.32`), which rules out a log2(N) bitplane blend tree at pixel
+width. What does assemble - `ee.vrelu.s16`, `ee.vprelu.s16`, `ee.vmulas.*` into
+40-bit accumulators - shows why: this is the AI extension, built for inference
+MACs and activations. Table lookup was never a design target.
 
 ---
 
@@ -1186,8 +1242,9 @@ it is now an optimisation rather than a rescue.
 > descriptor model and diffing it.
 >
 > The reason is in §7.4 and worth stating plainly: a command-list backend
-> replays into a framebuffer, and there is no framebuffer — 322 KB will not fit
-> in 192 KB of DRAM, and rows stream straight to the panel. So the layer that
+> replays into a framebuffer, and there is no framebuffer — because the panel is
+> wire-bound and storing pixels does not send fewer of them (§5.1), not because
+> one would not fit. Rows stream straight to the panel. So the layer that
 > was specified as "opcodes in, pixels out" became "what should each row look
 > like, and which of those changed". That inversion is the whole 60 Hz
 > architecture (§3.0); the vtable would have been machinery around it.

@@ -30,7 +30,7 @@ Four layers, each closing a measured cost:
 |---|---|
 | `gfx` | keeps a 448-row model of what the screen *should* look like and **derives** dirtiness by diffing it. A caller cannot mismark what it never marks — an earlier version declared its own dirty rows and got it subtly wrong. |
 | `elide` | coalesces dirty rows into contiguous **spans**, so a run of rows costs one address-window command, not one per row. A rolling resync refreshes a rotating slice each frame, so model drift cannot persist. |
-| `sh8601` | streams a span straight to the panel. There is **no framebuffer in RAM** — 322 KB will not fit in 192 KB of DRAM, and it is not needed. |
+| `sh8601` | streams a span straight to the panel. There is **no framebuffer in RAM** — not because 322 KB will not fit (it does), but because storing pixels does not send fewer of them. |
 | pacing | holds the 60 Hz cadence from our own timebase (no TE pin is wired) and counts every miss, rather than drifting quietly. |
 
 Measured on hardware:

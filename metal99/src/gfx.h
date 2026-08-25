@@ -7,10 +7,19 @@
  * one never transmitted.
  *
  * WHY RETAINED, NOT IMMEDIATE. NeoGPU streams opcodes into a backend that owns
- * a framebuffer. We have no framebuffer - 322 KB will not fit in 192 KB of
- * DRAM - and rows are streamed straight to the panel. So instead of replaying
- * a command list, we keep a tiny model of what each ROW should look like
- * (448 descriptors, 1792 bytes) and diff it.
+ * a framebuffer. We have no framebuffer, and rows are streamed straight to the
+ * panel. So instead of replaying a command list, we keep a tiny model of what
+ * each ROW should look like (448 descriptors, 1792 bytes) and diff it.
+ *
+ * The reason is NOT that a framebuffer will not fit. It fits: 368x448x2 is
+ * 322 KB, and right-sizing the 128 KB IRAM region (8 KB is used) leaves ~373 KB
+ * of DRAM below the ROM stack. The 192 KB in link.ld is a self-imposed limit,
+ * not silicon. This comment used to say otherwise.
+ *
+ * The reason is that the panel is WIRE-BOUND. Storing pixels does not send
+ * fewer of them, so a framebuffer costs 322 KB and buys no throughput. What
+ * reduces bytes on the wire is knowing what did not change, and that needs a
+ * model - 1792 bytes of it - not a copy of the screen.
  *
  * WHY DIFFED, NOT DECLARED. An earlier demo declared which rows it had touched
  * and got it subtly wrong: it marked a position two frames stale, which worked
