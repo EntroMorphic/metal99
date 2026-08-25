@@ -71,6 +71,7 @@ test: digest_test gfx_test ui_test vg_test game_test
 	./ui_test
 	./vg_test
 	./game_test
+	@../../tools/c99check.sh
 
 clean:
 	rm -f host_render digest_test gfx_test ui_test vg_test game_test gfx_png vg_png game_png *.ppm *.png

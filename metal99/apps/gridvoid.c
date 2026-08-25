@@ -363,5 +363,23 @@ static int game_frame(uint32_t f)
 }
 
 /* 30 Hz: a full-screen vector frame is 31.2 ms of wire time, so 60 is not
- * available and pretending otherwise just makes the late counter noise. */
+ * available and pretending otherwise just makes the late counter noise.
+ *
+ * KNOWN, MEASURED, NOT YET FIXED: craft shimmer slightly while the grid sits
+ * perfectly still. That asymmetry is the whole diagnosis - it is not the
+ * renderer. A 4000-frame probe found zero dropouts, zero segment overflow, and
+ * craft() varies smoothly across all 256 spin angles at every depth (no abrupt
+ * step at any angle, trig table exact to 0.003%). What we have is 31.2 ms of
+ * writing inside a 33.2 ms frame: a 94% duty cycle with essentially no gap, so
+ * the panel scans out rows we are still updating. Static pixels are rewritten
+ * identically and show nothing; a moving craft is at the old position in one
+ * row and the new one a few rows down, which on a thin wireframe reads as
+ * blinking.
+ *
+ * Three fixes, in order of honesty about effort. Skipping rows that are unlit
+ * this frame AND were unlit last frame cuts wire time hard on a mostly-black
+ * scene and buys real margin. 80 MHz halves it outright, if the SH8601 accepts
+ * it. The correct fix is TE: 0x35 is already enabled in sh8601_init, the panel
+ * is already pulsing the line, and we simply never wired the pin - see
+ * docs/lmm/framerate_raw.md. */
 const app_t APP = { "gridvoid", 30u, game_init, game_frame, game_event };

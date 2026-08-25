@@ -3,8 +3,22 @@
  *
  * PROJECT RULE: no scalar per-element math. All bulk data work goes through
  * these. GCC-for-Xtensa does not auto-vectorise to EE.*, so they are written
- * as inline __asm__ - which is ISO C99 legal (the reserved __asm__ spelling,
- * not the bare `asm` keyword that -pedantic-errors rejects).
+ * as inline __asm__.
+ *
+ * PRECISELY WHAT THAT COSTS US, because this header used to claim it was "ISO
+ * C99 legal" and that is too strong. ISO C99 does not define inline assembly
+ * at all - Annex J.5.10 lists it as a common extension, nothing more. What the
+ * __asm__ spelling buys is that it lives in the implementation's reserved
+ * namespace, so it cannot collide with any identifier a future standard might
+ * define, and -pedantic-errors accepts it where the bare `asm` keyword is
+ * rejected. So: this is a CONFORMING program using documented extensions in
+ * the reserved namespace. It is not a STRICTLY conforming one, and no program
+ * that touches a memory-mapped peripheral could be.
+ *
+ * The extension surface is exactly two constructs - __asm__ here, io.c,
+ * spi2.c and start.c, and __attribute__ in three places (VEC_ALIGN below,
+ * gdma_desc's alignment, and _start's section). Everything else compiles
+ * clean under -std=c99 -pedantic-errors on two independent front ends.
  *
  * ALIGNMENT: every pointer must be 16-byte aligned and every length a multiple
  * of 16 bytes. Use VEC_ALIGN on buffers. A 368-pixel row is 736 bytes = 46
