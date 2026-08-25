@@ -168,6 +168,62 @@ int main(void)
     (void)gfx_present();
     check(g_nmarks == 0, "a change reverted before present transmits nothing");
 
+    /* ---- 12. diff_extent edge cases ----
+     *
+     * The merge-walk over two run lists is the most load-bearing new code: it
+     * decides what gets transmitted. Boundaries are where a two-pointer walk
+     * goes wrong, so probe them directly. */
+    {
+        int a, b;
+
+        gfx_solid(0, 447, BG); (void)gfx_present();
+        stub_reset();
+        (void)gfx_rect(0, 50, 7, 50, FG);            /* first cell only */
+        (void)gfx_present();
+        check(marked(50, &a, &b) && a == 0 && b == 7,
+              "difference confined to the FIRST column cell");
+
+        gfx_solid(0, 447, BG); (void)gfx_present();
+        stub_reset();
+        (void)gfx_rect(360, 51, 367, 51, FG);        /* last cell only */
+        (void)gfx_present();
+        check(marked(51, &a, &b) && a == 360 && b == 367,
+              "difference confined to the LAST column cell");
+
+        gfx_solid(0, 447, BG); (void)gfx_present();
+        stub_reset();
+        (void)gfx_rect(0, 52, 367, 52, FG);          /* whole row */
+        (void)gfx_present();
+        check(marked(52, &a, &b) && a == 0 && b == 367,
+              "difference spanning the whole row");
+
+        /* Differences at BOTH ends, identical in the middle. The extent is a
+         * single range by construction, so it must cover both - conservative,
+         * never incorrect. */
+        gfx_solid(0, 447, BG); (void)gfx_present();
+        stub_reset();
+        (void)gfx_rect(0, 53, 7, 53, FG);
+        (void)gfx_rect(360, 53, 367, 53, FG);
+        (void)gfx_present();
+        check(marked(53, &a, &b) && a == 0 && b == 367,
+              "differences at both ends give one covering extent");
+
+        /* A row already at the run cap, then changed again. */
+        gfx_solid(0, 447, BG); (void)gfx_present();
+        {
+            int i;
+            for (i = 0; i < GFX_MAX_RUNS + 4; i++)
+                (void)gfx_rect((uint16_t)(i * 32), 54, (uint16_t)(i * 32 + 15), 54,
+                               (uint16_t)(0x5000u + i));
+        }
+        (void)gfx_present();
+        stub_reset();
+        (void)gfx_rect(0, 54, 367, 54, C3);          /* flatten it again */
+        (void)gfx_present();
+        check(marked(54, &a, &b), "a row at the run cap still diffs and marks");
+        check(band_is(54, 0, W - 1, C3), "  and renders correctly afterwards");
+    }
+
     printf("%s (%d failure%s)\n", g_fails ? "FAILED" : "OK",
            g_fails, g_fails == 1 ? "" : "s");
     return g_fails != 0;

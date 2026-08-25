@@ -191,7 +191,13 @@ int sh8601_write_span_x(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1,
         static uint16_t VEC_ALIGN one[SH8601_WIDTH];
         for (y = (int)y0; y <= (int)y1; y++) {
             t_mark = cpu_cycles();
-            rowfn(one, y);                       /* renders the whole row   */
+            /* Renders the WHOLE row even for a narrow span, then transmits the
+             * slice. Wasteful in principle - a 88px span renders 368px - but
+             * render is 0.002 ms/row against 0.069 ms/row of wire, so the waste
+             * is under 3% of a frame and buying it back means teaching every
+             * rowfn about x bounds. Measured before assumed; revisit if render
+             * ever stops being negligible (DESIGN.md 6.9a). */
+            rowfn(one, y);
             g_stats.render_cycles += cpu_cycles() - t_mark;
 
             t_mark = cpu_cycles();

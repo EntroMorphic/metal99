@@ -35,6 +35,16 @@ static int  is_touched(int y) { return (g_touched[(uint32_t)y >> 5] >> ((uint32_
  * store; the cap is enforced in one place instead of assumed in three.
  */
 #define RUNBUF_MAX (GFX_MAX_RUNS * 2 + 2)
+
+/*
+ * insert_run emits at most: every run left of xa, the new run, and every run
+ * right of xb - so 2*GFX_MAX_RUNS + 1. The loops have no bounds check because
+ * this assertion is the bound. C99 has no _Static_assert; CONTRIBUTING.md's
+ * idiom instead.
+ */
+typedef char runbuf_must_hold_worst_case[
+    (RUNBUF_MAX >= GFX_MAX_RUNS * 2 + 1) ? 1 : -1];
+
 typedef struct {
     uint16_t x[RUNBUF_MAX];
     uint16_t c[RUNBUF_MAX];

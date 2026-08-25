@@ -47,5 +47,10 @@ SECTIONS
     _bss_end = ABSOLUTE(.);
   } > dram
 
+  /* Provided, but nothing references it: _start runs on the stack the mask ROM
+   * hands over, which lives just under 0x3FCE9700 - above this region, growing
+   * down, with ~70 KB of clearance before it could reach our data. Kept as the
+   * anchor for the day this image wants its own stack; check `nm` for a
+   * reference before assuming it is live. */
   _stack_top = ORIGIN(dram) + LENGTH(dram) - 16;
 }

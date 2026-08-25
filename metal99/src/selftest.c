@@ -111,6 +111,26 @@ static uint32_t reference(int rows, int corrupt_row, int corrupt_idx,
     return vec_fold_get();
 }
 
+/*
+ * Fold the sub-range [x0,x1] of `rows` rows of the probe pattern.
+ *
+ * The sub-width transport had NO ledger coverage: every self-test case called
+ * the full-width wrapper, so the path that sets a narrow address window and
+ * streams &row[x0] was exercised only by looking at the panel. That is exactly
+ * the "described by a human" loop this harness exists to replace.
+ */
+static uint32_t reference_x(int rows, int x0, int x1)
+{
+    static uint16_t VEC_ALIGN ref[SH8601_WIDTH];
+    int y;
+    vec_fold_reset();
+    for (y = 0; y < rows; y++) {
+        probe(ref, y);
+        vec_fold(&ref[x0], (uint32_t)(x1 - x0 + 1) * 2u);
+    }
+    return vec_fold_get();
+}
+
 int selftest_transport(void)
 {
     /*
@@ -178,6 +198,50 @@ int selftest_transport(void)
             con_puts(" pre=");        con_dec((int32_t)(got_all - got_px));
             con_puts(" dig=");        con_hex32(dig);
             con_puts("/");            con_hex32(want_dig);
+            if (rc == SPI2_OK && got_px == want && dig == want_dig) {
+                con_puts("  PASS\r\n");
+            } else {
+                con_puts("  FAIL\r\n"); fails++;
+            }
+        }
+    }
+
+    /*
+     * SUB-WIDTH SPANS. Same ledger, narrower window.
+     *
+     * A rectangle must transmit exactly rows * cols * 2 pixel bytes and digest
+     * to a reference folded over the same sub-range. Sub-width always takes the
+     * FIFO path (a partial band is not contiguous), so this also proves the
+     * fallback out of the banded path is clean.
+     */
+    {
+        static const int xcase[3][4] = {   /* x0, x1, rows, unused */
+            { 136, 223,  32, 0 },          /* a centred 88px element   */
+            {   0,   7, 100, 0 },          /* the first column cell    */
+            { 360, 367,  64, 0 }           /* the last column cell     */
+        };
+        int c;
+        con_puts("\r\nself-test: SUB-WIDTH spans\r\n");
+        for (c = 0; c < 3; c++) {
+            int xa = xcase[c][0], xb = xcase[c][1], rows = xcase[c][2];
+            uint32_t want = (uint32_t)rows * (uint32_t)(xb - xa + 1) * 2u;
+            uint32_t got_px, dig, want_dig;
+
+            want_dig = reference_x(rows, xa, xb);
+            spi2_ledger_reset();
+            rc = sh8601_write_span_x((uint16_t)xa, 0u, (uint16_t)xb,
+                                     (uint16_t)(rows - 1), probe);
+            got_px = spi2_ledger_pixel_bytes();
+            dig    = spi2_ledger_digest();
+
+            con_puts("  x="); con_dec((int32_t)xa);
+            con_puts(".."); con_dec((int32_t)xb);
+            con_puts(" rows="); con_dec((int32_t)rows);
+            con_puts(": rc="); con_dec((int32_t)rc);
+            con_puts(" px="); con_dec((int32_t)got_px);
+            con_puts("/"); con_dec((int32_t)want);
+            con_puts(" dig="); con_hex32(dig);
+            con_puts("/"); con_hex32(want_dig);
             if (rc == SPI2_OK && got_px == want && dig == want_dig) {
                 con_puts("  PASS\r\n");
             } else {
