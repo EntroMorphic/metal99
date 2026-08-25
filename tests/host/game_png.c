@@ -24,9 +24,29 @@ int sh8601_write_frame(void (*rowfn)(uint16_t *row, int y))
     }
     return 0;
 }
+/*
+ * The elided path. Rows NOT sent keep whatever the panel already had - which
+ * is the whole point of elision, and the reason g_fb persists across frames
+ * here instead of being cleared. If vg ever marks too few rows, stale pixels
+ * survive in this image exactly as they would on the glass.
+ */
 int sh8601_write_span_x(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1,
                         void (*rowfn)(uint16_t *, int))
-{ (void)x0;(void)y0;(void)x1;(void)y1;(void)rowfn; return 0; }
+{
+    int y, x;
+    for (y = y0; y <= (int)y1; y++) {
+        rowfn(g_row, y);
+        for (x = x0; x <= (int)x1; x++) g_fb[y][x] = g_row[x];
+    }
+    return 0;
+}
+
+/* elide measures itself with these. */
+static sh8601_stats g_ss;
+const sh8601_stats *sh8601_last_frame(void) { return &g_ss; }
+uint32_t g_cpu_hz = 240000000u;
+static uint32_t g_cyc;
+uint32_t cpu_cycles(void) { return (g_cyc += 1000u); }
 
 int main(int argc, char **argv)
 {

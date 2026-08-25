@@ -36,13 +36,37 @@ int sh8601_write_frame(void (*rowfn)(uint16_t *row, int y))
     for (y = 0; y < H; y++) { rowfn(g_row, y); g_rows_rendered++; }
     return 0;
 }
+/* The elided path. Counts rows so the soak can assert elision actually
+ * elides - a present that quietly sent all 448 every frame would otherwise
+ * pass every test in this file. */
+static int g_rows_sent;
+static int g_spans;
+static uint16_t g_panel[H][W];   /* what the glass holds, retained like glass */
+static uint8_t  g_sent_row[H];   /* was this row transmitted THIS frame?      */
 int sh8601_write_span_x(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1,
                         void (*rowfn)(uint16_t *, int))
-{ (void)x0;(void)y0;(void)x1;(void)y1;(void)rowfn; return 0; }
+{
+    int y;
+    g_spans++;
+    for (y = y0; y <= (int)y1; y++) {
+        int x;
+        rowfn(g_row, y);
+        for (x = x0; x <= (int)x1; x++) g_panel[y][x] = g_row[x];
+        g_sent_row[y] = 1;
+        g_rows_sent++;
+    }
+    return 0;
+}
+
+static sh8601_stats g_ss;
+const sh8601_stats *sh8601_last_frame(void) { return &g_ss; }
+uint32_t g_cpu_hz = 240000000u;
+static uint32_t g_cyc;
+uint32_t cpu_cycles(void) { return (g_cyc += 1000u); }
 
 int main(void)
 {
-    int f, worst_segs = 0, bad_rc = 0, lit_frames = 0;
+    int f, worst_segs = 0, bad_rc = 0, lit_frames = 0, stale = 0;
     uint32_t seed = 12345u;
 
     printf("game_test: gridvoid soak\n");
@@ -59,15 +83,54 @@ int main(void)
             e.ax = e.x; e.ay = e.y; e.ms = 0u;
             if (APP.event) APP.event(&e);
         }
+        { int q; for (q = 0; q < H; q++) g_sent_row[q] = 0; }
         if (APP.frame((uint32_t)f) != 0) bad_rc++;
         if (vg_count() > worst_segs) worst_segs = vg_count();
+
+        /*
+         * THE PROPERTY ELISION HAS TO HOLD: the panel, after being sent only
+         * the rows vg asked for, must be pixel-identical to a panel that was
+         * sent every row. Anything vg fails to mark shows up here as a stale
+         * pixel that a full repaint would have overwritten - which on glass is
+         * exactly the "artifact" this project has chased into the transport
+         * more than once.
+         *
+         * vg_finish() re-buckets the segments the app just submitted without
+         * disturbing them, so the full render below is the SAME frame, not an
+         * approximation of it.
+         */
+        {
+            static uint16_t full[H][W];
+            int y, x;
+            vg_finish();
+            for (y = 0; y < H; y++) vg_rowfn(full[y], y);
+            for (y = 0; y < H && !stale; y++)
+                for (x = 0; x < W; x++)
+                    if (full[y][x] != g_panel[y][x]) {
+                        stale = 1;
+                        printf("     stale pixel at (%d,%d) frame %d: "
+                               "panel=0x%04X full=0x%04X  row_sent=%d\n",
+                               x, y, f, g_panel[y][x], full[y][x], g_sent_row[y]);
+                        break;
+                    }
+        }
         if (vg_count() > 0) lit_frames++;
     }
 
     check(bad_rc == 0, "6000 frames all present successfully");
-    check(g_rows_rendered == 6000 * H, "every frame rendered every row");
+    check(g_rows_sent > 0, "the app transmitted rows");
     check(lit_frames == 6000, "no frame came out empty");
     check(vg_overflow() == 0u, "the scene never exceeded the segment budget");
+    check(!stale, "elided panel is pixel-identical to a full repaint");
+    {
+        long full_cost = (long)6000 * H;
+        printf("     rows transmitted: %d of %ld (%ld%% elided)\n",
+               g_rows_sent, full_cost,
+               100 - (long)g_rows_sent * 100 / full_cost);
+    }
+    printf("     spans: %d (%.1f per frame)\n", g_spans, g_spans / 6000.0);
+    check(g_rows_sent < (int)(6000 * H * 9 / 10),
+          "elision actually elides - fewer rows sent than a full repaint");
     check(worst_segs < VG_MAX_SEGS,
           "  worst-case segment count stays under the cap");
     printf("     worst-case scene: %d of %d segments\n", worst_segs, VG_MAX_SEGS);

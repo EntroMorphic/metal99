@@ -328,7 +328,15 @@ static int game_frame(uint32_t f)
      * half-reset world. A function that reinitialises a structure must not be
      * called by the loop that owns it.
      */
-    if (g_lives == 0) { game_init(); return sh8601_write_frame(vg_rowfn); }
+    /*
+     * RESTART, THEN FALL THROUGH AND DRAW. It used to `return vg_present()`
+     * here, which presented without vg_begin/vg_finish - so the walk from the
+     * PREVIOUS frame was still finished, every row took vg_rowfn's
+     * already-past early return, and the restart frame went out as pure
+     * background. A blank frame between death and the new grid, on every
+     * death. Presenting a scene nobody drew is not a present; it is a clear.
+     */
+    if (g_lives == 0) game_init();
 
     if ((f % 900u) == 899u && g_wave < 9) g_wave++;
     if (g_tracer > 0) g_tracer--;
@@ -359,33 +367,38 @@ static int game_frame(uint32_t f)
     number(g_wave, SH8601_WIDTH - 30, 40, 10, 16, 1, C_GRID);
 
     vg_finish();
-    return sh8601_write_frame(vg_rowfn);
+    return vg_present();
 }
 
 /*
- * 40 Hz. A full repaint is 22.2 ms of panel time at 80 MHz - it was 31.2 ms at
- * 40 MHz, which is where the old 30 Hz came from.
+ * 36 Hz, through elision - and the honest accounting of why it is not more.
  *
- * THE MARGIN IS THIN AND THAT IS DELIBERATE: 24.7 ms worst frame against a
- * 25 ms budget, held over a 75 s soak with foes spawning and dying, late=0.
- * About 1%. The cost is dominated by the full repaint, which is constant, so
- * it is deterministic rather than lucky - but a scene that adds work will
- * spend that 1% immediately and start reporting late. If you make this app
- * busier, re-measure before assuming 40 still fits.
+ * A frame now sends only the rows carrying something this frame or last (see
+ * vg_present): 21% fewer rows over a 6000-frame soak, and a typical frame
+ * falls from 24.3 ms to ~19 ms. The worst frame does not move. It cannot: when
+ * the scene changes enough that this frame's rows and last frame's rows
+ * together cover the screen, the work IS a full repaint, plus what elision
+ * costs to decide that. Measured at ~25.5 ms against 24.3 before.
  *
- * Doubling the bus clock bought 1.41x, not 2x, which says the frame is no
- * longer purely wire-bound: ~18 us/row goes on the wire and ~29 us goes on
- * per-row command overhead and rendering inside vg_rowfn. The next real win is
- * therefore skipping rows that are unlit this frame AND were unlit last frame,
- * which saves BOTH costs on roughly the top quarter of a vector scene - enough
- * to put a repaint under one refresh period. That is also what would finally
- * fix the shimmer, since it is the only phase control available: see below.
+ * A fixed cadence has to fit the WORST frame, not the typical one, so 40 Hz
+ * held before elision only because every frame was uniformly expensive, and
+ * 36 is what holds now with late=0 over 65 s. That is the trade taken with
+ * eyes open: a slightly slower guaranteed cadence, in exchange for a fifth of
+ * the pixels never leaving the chip and a duty cycle that drops from 97% to
+ * about 75% on typical frames - which is the only thing available to reduce
+ * the beam-crossing that makes moving wireframes shimmer, since this board
+ * routes no TE line (apps/tescan.c).
  *
- * NO TE ON THIS BOARD - measured, not assumed. Waveshare's BSP defines no TE
- * pin and neither does their Arduino pin_config.h, and a scan of every free
- * pad (apps/tescan.c, with a self-test that drives a known 60 Hz square wave
- * and requires the scanner to read it back) found all of them floating. The
- * panel is pulsing TE - sh8601_init sends 0x35 - but the line goes nowhere we
- * can reach. So we cannot lock to the panel's phase; we can only outrun it.
+ * WHAT WOULD ACTUALLY RAISE IT is elide_mark_rect instead of elide_mark.
+ * vg marks full-width rows; above the horizon a craft occupies a handful of
+ * columns and the rest of that row is sent for nothing. Narrow marks would cut
+ * the worst case directly. They were left out deliberately: mixed x-extents
+ * stop elide coalescing, split one span into several, and every extra boundary
+ * is another chance for the leak in spi2.h - which is the bug that cost this
+ * project weeks. Measure that before trading it away.
+ *
+ * Bridging short gaps between marked runs was tried, to spend rows saving span
+ * setups. 3.1 spans per frame with it and without; worst frame unchanged. It
+ * was removed rather than kept as a plausible story with no effect.
  */
-const app_t APP = { "gridvoid", 40u, game_init, game_frame, game_event };
+const app_t APP = { "gridvoid", 36u, game_init, game_frame, game_event };

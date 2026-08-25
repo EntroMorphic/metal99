@@ -49,6 +49,23 @@ void vg_finish(void);
 
 /* Render one row. Signature matches sh8601_write_frame's rowfn. Rows MUST be
  * requested in increasing order - the active-edge list is a forward walk. */
+/*
+ * PRESENT THROUGH ELISION - what a vector app should call.
+ *
+ * sh8601_write_frame(vg_rowfn) still works and still sends all 448 rows. This
+ * sends only the rows that have something on them now or had something on them
+ * last frame, through elide_flush - the same machinery every gfx app uses, not
+ * a second implementation of the same idea.
+ *
+ * vg contributes exactly one fact: which rows carry a segment. It keeps no
+ * framebuffer and diffs no pixels. Coalescing, the rolling resync, retrying
+ * rows after a failed flush and the per-frame statistics are all elide's,
+ * untouched - read them with elide_last().
+ *
+ * Returns SPI2_OK, or the transport's error. Call after vg_finish().
+ */
+int vg_present(void);
+
 void vg_rowfn(uint16_t *row, int y);
 
 /* Background, painted before segments. Defaults to black. */
