@@ -19,6 +19,20 @@
  * wrap. Deriving dirtiness from an actual before/after comparison removes that
  * entire class of bug - a caller cannot mismark what it does not mark.
  *
+ * DIFFED AGAINST WHAT WAS SENT, NOT AGAINST THE MODEL IN FLIGHT.
+ *
+ * The first version diffed at SET time, comparing each call against the current
+ * model. That marked every intermediate state. Erasing a box and drawing it
+ * 4 px lower takes the overlapping rows FG -> BG -> FG: net unchanged, but both
+ * transitions marked them, and they were transmitted for nothing. Measured on
+ * an 88x88 box: 92 rows and 8,096 px marked for 8 rows and 704 px of real
+ * change - 11.5x.
+ *
+ * So the model is double-buffered. Callers write g_model freely; gfx_present
+ * diffs it against g_sent - what the panel actually last received - and marks
+ * only the difference. Intermediate states cost nothing, and a caller can no
+ * longer make a frame expensive by describing it in an awkward order.
+ *
  * ROWS ARE RUNS, NOT BANDS.
  *
  * A row was previously one of two things: a single colour, or two colours with
@@ -111,8 +125,10 @@ void gfx_init(void);
  * Fill a rectangle. x0/x1 are snapped OUTWARD to the grid so the requested area
  * is always covered, never clipped. Inclusive on all four edges.
  *
- * Returns the number of rows whose model actually CHANGED - zero means the call
- * was fully elided and nothing will be transmitted.
+ * Returns the number of rows this call changed IN THE MODEL. That is not the
+ * number that will be transmitted: a row changed here and changed back before
+ * the next present costs nothing. Read gfx_last()->rows_sent for what actually
+ * went to the panel.
  */
 uint32_t gfx_rect(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1,
                   uint16_t colour);
@@ -120,8 +136,9 @@ uint32_t gfx_rect(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1,
 /* Full-width band: gfx_rect(0, y0, WIDTH-1, y1, colour). */
 uint32_t gfx_solid(uint16_t y0, uint16_t y1, uint16_t colour);
 
-/* Two colours split at x. Now just two rects; kept because it reads better at
- * the call site and because the demo and tests use it. */
+/* Two colours split at x - a left band and a right band. Now literally two
+ * gfx_rect calls; kept because a split reads better at a call site than two
+ * rects whose bounds must agree. --gc-sections drops it when unused. */
 uint32_t gfx_split(uint16_t y0, uint16_t y1, uint16_t left, uint16_t right,
                    uint16_t x);
 

@@ -6,10 +6,23 @@
  * We keep well below 0x3FCE9700, which the ROM uses for its own stack. */
 ENTRY(_start)
 
+/* THESE ARE CHOICES, NOT LIMITS.
+ *
+ * The chip has 480 KB of DRAM-addressable SRAM. We claim 192 KB of it and use
+ * about 96; IRAM claims 128 KB for under 11 KB of code. Both are deliberately
+ * generous and deliberately unchanged - the map is verified working, and there
+ * is no reason to move a working memory map.
+ *
+ * Stated because "322 KB will not fit in 192 KB of DRAM" was repeated for a
+ * while as the reason this project has no framebuffer. It is false: right-
+ * sizing IRAM would leave ~373 KB below the ROM stack floor, and a 322 KB
+ * framebuffer fits with room over. The real reason is that the panel is
+ * wire-bound and storing pixels does not send fewer of them. See
+ * docs/DESIGN.md 5.1 for the arithmetic. */
 MEMORY
 {
-  iram (RWX) : ORIGIN = 0x40378000, LENGTH = 0x20000   /* 128K code   */
-  dram (RW)  : ORIGIN = 0x3FCA8000, LENGTH = 0x30000   /* 192K data   */
+  iram (RWX) : ORIGIN = 0x40378000, LENGTH = 0x20000   /* 128K claimed, ~11K used  */
+  dram (RW)  : ORIGIN = 0x3FCA8000, LENGTH = 0x30000   /* 192K claimed, ~96K used  */
 }
 
 SECTIONS

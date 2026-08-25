@@ -8,7 +8,23 @@
 #define ROWS        SH8601_HEIGHT
 #define ROW_VECTORS (SH8601_WIDTH * 2 / VEC_BYTES)
 
+/*
+ * g_model  what the caller has described
+ * g_sent   what the panel last actually received
+ *
+ * The pair is the whole point: dirtiness is derived at PRESENT time by diffing
+ * them, so intermediate states a caller passes through cost nothing. See gfx.h.
+ */
 static gfx_row VEC_ALIGN g_model[ROWS];
+static gfx_row VEC_ALIGN g_sent[ROWS];
+
+/* Rows whose model changed since the last present. Only these can differ from
+ * g_sent, so only these are worth diffing - the walk is O(touched), not O(448). */
+#define TWORDS ((ROWS + 31) / 32)
+static uint32_t g_touched[TWORDS];
+
+static void touch(int y)      { g_touched[(uint32_t)y >> 5] |= 1u << ((uint32_t)y & 31u); }
+static int  is_touched(int y) { return (g_touched[(uint32_t)y >> 5] >> ((uint32_t)y & 31u)) & 1u; }
 
 /*
  * Scratch wide enough for the WORST case before normalisation.
@@ -47,16 +63,26 @@ void gfx_init(void)
 {
     uint32_t i;
     for (i = 0u; i < (uint32_t)ROWS; i++) {
-        g_model[i].n = 1u;
-        g_model[i].x[0] = 0u;
-        g_model[i].c[0] = 0u;
+        g_model[i].n = 1u; g_model[i].x[0] = 0u; g_model[i].c[0] = 0u;
+        /* vec_copy, never `g_sent[i] = g_model[i]` - a struct assignment at
+         * this size makes GCC emit a memcpy call, and there is no libc. */
+        vec_copy(&g_sent[i], &g_model[i], GFX_ROW_VECTORS);
     }
+    for (i = 0u; i < (uint32_t)TWORDS; i++) g_touched[i] = 0u;
     g_changed_pending = 0u;
     g_overflow_pending = 0u;
     elide_init();          /* marks everything dirty: first present repaints */
 }
 
-void gfx_invalidate(void) { elide_reset(); }
+void gfx_invalidate(void)
+{
+    uint32_t i;
+    /* Touch every row as well as marking every row. The marks force the
+     * repaint; the touches make present() re-sync g_sent afterwards, so the
+     * two models cannot be left disagreeing about what the panel holds. */
+    for (i = 0u; i < (uint32_t)TWORDS; i++) g_touched[i] = 0xFFFFFFFFu;
+    elide_reset();
+}
 
 /*
  * Merge adjacent runs of equal colour, then enforce the run cap by merging the
@@ -181,7 +207,8 @@ uint32_t gfx_rect(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1,
             /* vec_copy, not struct assignment: at 34 bytes GCC emitted a call
              * to memcpy and there is no libc to satisfy it. */
             vec_copy(&g_model[y], &want, GFX_ROW_VECTORS);
-            elide_mark_rect(dx0, y, dx1, y);
+            touch(y);          /* NOT elide_mark: the panel-facing diff is
+                                * taken at present time, against g_sent. */
             changed++;
         }
     }
@@ -221,8 +248,19 @@ static void gfx_rowfn(uint16_t *row, int y)
 int gfx_present(void)
 {
     uint32_t t0 = cpu_cycles();
-    int rc;
+    int rc, y;
     const elide_stats *e;
+
+    /*
+     * THE DIFF THAT MATTERS. Only touched rows can differ from what was sent,
+     * and a touched row that came back to where it started marks nothing.
+     */
+    for (y = 0; y < ROWS; y++) {
+        uint16_t dx0, dx1;
+        if (!is_touched(y)) continue;
+        if (diff_extent(&g_sent[y], &g_model[y], &dx0, &dx1))
+            elide_mark_rect(dx0, y, dx1, y);
+    }
 
     rc = elide_flush(gfx_rowfn);
     e  = elide_last();
@@ -234,9 +272,21 @@ int gfx_present(void)
     g_stats.px_sent       = e->px_sent;
     g_stats.cycles        = cpu_cycles() - t0;
 
-    /* Clear only once the rows actually went out. elide_flush leaves failed
-     * rows dirty, and the change count must stay consistent with that. */
-    if (rc == SPI2_OK) { g_changed_pending = 0u; g_overflow_pending = 0u; }
+    /*
+     * Only now is g_sent true. elide_flush leaves failed rows dirty so the next
+     * attempt retries them; advancing g_sent regardless would tell the next
+     * diff those rows are already on the panel, and the update would be lost
+     * for good - the exact "model drifts from reality" failure this layer
+     * exists to prevent.
+     */
+    if (rc == SPI2_OK) {
+        uint32_t i;
+        for (y = 0; y < ROWS; y++)
+            if (is_touched(y)) vec_copy(&g_sent[y], &g_model[y], GFX_ROW_VECTORS);
+        for (i = 0u; i < (uint32_t)TWORDS; i++) g_touched[i] = 0u;
+        g_changed_pending = 0u;
+        g_overflow_pending = 0u;
+    }
     return rc;
 }
 

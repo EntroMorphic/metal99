@@ -28,8 +28,8 @@ Four layers, each closing a measured cost:
 
 | | |
 |---|---|
-| `gfx` | keeps a 448-row model of what the screen *should* look like and **derives** dirtiness by diffing it. A caller cannot mismark what it never marks — an earlier version declared its own dirty rows and got it subtly wrong. |
-| `elide` | coalesces dirty rows into contiguous **spans**, so a run of rows costs one address-window command, not one per row. A rolling resync refreshes a rotating slice each frame, so model drift cannot persist. |
+| `gfx` | keeps two 448-row models — what the caller described, and what the panel last received — and **derives** dirtiness by diffing them at present time. A caller cannot mismark what it never marks, and cannot make a frame expensive by describing it in an awkward order. Rows are run lists, so rectangles compose. |
+| `elide` | carries an x-extent per dirty row and coalesces rows into **rectangular spans**, so an update costs its own columns rather than whole rows. A rolling resync refreshes a rotating slice each frame, so model drift cannot persist. |
 | `sh8601` | streams a span straight to the panel. There is **no framebuffer in RAM** — not because 322 KB will not fit (it does), but because storing pixels does not send fewer of them. |
 | pacing | holds the 60 Hz cadence from our own timebase (no TE pin is wired) and counts every miss, rather than drifting quietly. |
 
@@ -39,8 +39,9 @@ Measured on hardware:
 |---|---|
 | Steady-state cadence | **60 Hz locked — zero late frames** |
 | Typical interface update, 104 rows | **7.3 ms of 16.67 ms — 2.2x headroom** |
-| Moving a 96-row element | **6.7 ms — 2.4x headroom** |
+| Moving an 88x88 element | **1,968 px — 2% of the budget** |
 | The same frame drawn twice | **0 rows transmitted** |
+| A change made and reverted before present | **0 rows transmitted** |
 | Same workload, unpaced | **~140 fps** |
 
 **Elision is what makes 60 Hz reachable at all.** Repainting every frame costs
@@ -52,20 +53,26 @@ that matters is how few bytes go over the wire.
 
 ### Budgeting a design
 
-Cost is **linear at 0.069 ms/row**, so an interface can be budgeted directly:
+Cost is **linear at 0.00019 ms per pixel transmitted**, so an interface can be
+budgeted directly. One 60 Hz frame buys about **88,900 pixels** — 54% of the
+screen. Measured, for one step of continuous motion:
 
-| rows changed | frame | of 16.67 ms |
+| workload | px/frame | of the 60 Hz budget |
 |---|---|---|
-| 32 | 2.2 ms | 13% |
-| 96 | 6.7 ms | 40% |
-| 104 | 7.3 ms | 44% |
-| **240** | **16.6 ms** | **100% — the boundary** |
-| 448 (everything) | 31.2 ms | 187% — misses |
+| 88x88 element moving | **1,968** | 2% |
+| full-width 96-row bar moving | **4,931** | 6% |
+| 240 full rows | 88,320 | 99% — the boundary |
+| 448 rows (everything) | 164,864 | 185% — misses |
 
-**Up to ~240 rows — 54% of the screen — can change every frame at a locked
-60 Hz.** Interfaces do not repaint whole screens; a moving element, a text
-region, a status bar all sit far inside that. Only workloads that touch most of
-the screen every frame — fullscreen video, a scrolling background — exceed it.
+Interfaces do not repaint whole screens. Only workloads touching most of the
+screen every frame — fullscreen video, a scrolling background — exceed the
+budget.
+
+**The rolling resync is now the floor.** It refreshes 4 full-width rows every
+frame — 1,472 px — which is 75% of that 88x88 element's cost. The safety net
+outweighs the work, which is what elision being this cheap looks like. It is
+tunable (`ELIDE_RESYNC_FRAMES`) and deliberately left alone: it is what makes
+the dirty-tracking model self-correcting.
 
 Banded GDMA closes that last case at 16.6 ms full-frame, and is **parked**: it
 ships byte-identical data (the on-device self-test digests 448 rows to

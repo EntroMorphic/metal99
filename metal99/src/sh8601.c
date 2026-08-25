@@ -120,7 +120,6 @@ const sh8601_stats *sh8601_last_frame(void) { return &g_stats; }
 #define BAND_ROWS      32
 #define ROWS_PER_DESC  4
 #define DESCS_PER_BAND (BAND_ROWS / ROWS_PER_DESC)
-#define BAND_BYTES     (BAND_ROWS * SH8601_WIDTH * 2)
 
 static uint16_t  VEC_ALIGN g_band[2][BAND_ROWS * SH8601_WIDTH];
 static gdma_desc           g_chain[2][DESCS_PER_BAND];

@@ -124,6 +124,33 @@ one continuous run.
   which is part of how the constant-zero return went unnoticed. It now prints
   the return value, so the two disagreeing would be visible.
 
+### Added — a drawing surface
+- **Rows are run lists, and spans are rectangles.** A row was previously one of
+  two things: a solid colour, or two colours with one transition — which could
+  not express a rectangle anywhere but against a screen edge. `gfx_rect()` now
+  composes arbitrary rectangles, `elide` carries an x-extent per dirty row, and
+  `sh8601` sets the address window to it. The `0x2A`/`0x2B` window always took
+  `x0`/`x1`; the driver had simply never used them.
+- **Dirtiness is derived at present time, against what the panel actually
+  received.** The first version diffed at set time against the model in flight,
+  so erase-then-draw marked the overlapping rows `FG→BG→FG` — net unchanged,
+  transmitted anyway. A second 448-row model (`g_sent`) makes intermediate
+  states free.
+
+  Measured on hardware, one step of continuous motion:
+
+  | | px/frame |
+  |---|---|
+  | full-width bar, before | 37,750 |
+  | 88x88 box, sub-width only | 9,236 |
+  | 88x88 box, + present-time diff | **1,968** |
+
+  **19x** end to end, and the run model is what made the box expressible at all.
+- Run overflow past `GFX_MAX_RUNS` merges the narrowest adjacent pair and is
+  counted in `gfx_stats.run_overflows` — lossy, bounded, never silent.
+- 24 host assertions on the run model, linking the real `gfx.c` and stubbing
+  only the layers beneath it.
+
 ### Added (remediation)
 - `tests/host/digest_test.c` — 14 assertions on the transmit-ledger digest,
   runnable without a board, linking `metal99/src/fold.c` so the firmware's own
@@ -156,6 +183,10 @@ one continuous run.
   ships identical bytes — 448 rows digest to `0xF5642645` through both
   transports on device — which narrows the fault to delivery timing but does
   not locate it.
+- **The rolling resync is now the dominant cost of a small update** — 4
+  full-width rows per frame is 1,472 px, against 1,968 px for a moving 88x88
+  element. The safety net outweighs the work. `ELIDE_RESYNC_FRAMES` trades that
+  against how fast model drift is corrected; left alone deliberately.
 - **Full-frame 60 Hz is not achieved by what ships.** FIFO measures 31.2 ms for
   448 rows. Interface-sized updates hit 60 Hz with 2.2x headroom; a literal full
   repaint needs the parked transport.

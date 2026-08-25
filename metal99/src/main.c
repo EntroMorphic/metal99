@@ -171,8 +171,15 @@ void app_entry(void)
         con_puts(" px/frame\r\n");
         con_puts("   sub-width box   "); con_dec((int32_t)(px_box / 60u));
         con_puts(" px/frame\r\n");
+        /* Both are 60-frame sums, so the ratio is simply their quotient.
+         * Computing it as px_bar/(px_box/60)/60 truncated twice and under-
+         * reported. One decimal, since the ratio is not a whole number. */
         con_puts("   ratio           ");
-        con_dec((int32_t)(px_box ? (px_bar / (px_box / 60u) / 60u) : 0));
+        if (px_box > 0u) {
+            uint32_t r10 = (px_bar * 10u) / px_box;
+            con_dec((int32_t)(r10 / 10u)); con_putc('.');
+            con_dec((int32_t)(r10 % 10u));
+        } else { con_putc('0'); }
         con_puts("x fewer pixels for the same motion\r\n");
 
         /* Leave a centred box on screen: the shape the old two-kind row model

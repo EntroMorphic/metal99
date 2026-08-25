@@ -353,6 +353,58 @@ width. What does assemble - `ee.vrelu.s16`, `ee.vprelu.s16`, `ee.vmulas.*` into
 40-bit accumulators - shows why: this is the AI extension, built for inference
 MACs and activations. Table lookup was never a design target.
 
+### 5.2 The run model, and diffing against what was sent
+
+Measured 2026-08-24.
+
+**A row used to be a band.** `gfx_row` was `{kind, a, b, x}`: one colour, or two
+with a single transition. That expressed a full-width band and one vertical
+edge, and it could not express a rectangle anywhere but against a screen edge -
+a row crossing a centred box is `bg|fg|bg`, two transitions. You could not draw
+a box in the middle of the screen.
+
+A row is now a run list (8 runs, 48 bytes, padded to whole vectors so `vec_copy`
+moves one in three instructions). Rectangles compose, overlap and elide.
+
+**Spans became rectangles.** `elide` carries an x-extent per dirty row and
+coalesces only rows whose extents are identical - merging different extents
+would force their union on every row, and two rows dirty at opposite edges would
+union to full width, worse than two spans. `sh8601_write_span_x` sets the
+address window to the extent. The `0x2A`/`0x2B` window had always taken x0/x1;
+the driver passed `0, WIDTH-1` on every call from first contact until now.
+
+**Then the diff moved to present time.** The first cut diffed at SET time
+against the model in flight, which marked every intermediate state. Erasing a
+box and drawing it 4 px lower takes the overlapping rows `FG -> BG -> FG`: net
+unchanged, both transitions marked, transmitted for nothing. So `gfx` keeps two
+models - `g_model` (described) and `g_sent` (what the panel actually received) -
+and diffs them in `gfx_present()`, walking only rows touched since the last one.
+
+| one step of continuous motion | px/frame | |
+|---|---|---|
+| full-width bar, band model | 37,750 | the demo element, full width by nature |
+| 88x88 box, sub-width spans | 9,236 | 4x |
+| 88x88 box, + present-time diff | **1,968** | **19x end to end** |
+
+`g_sent` advances **only on a successful flush**. Advancing it regardless would
+tell the next diff those rows are already on the panel and the update would be
+lost for good - the precise "model drifts from reality" failure this layer
+exists to prevent.
+
+#### The safety net is now the dominant cost
+
+The rolling resync refreshes 4 full-width rows every frame: 1,472 px, against
+1,968 px total for a moving 88x88 element. **75% of a small update is now the
+resync, not the update.**
+
+That is what elision being this cheap looks like, and it is not obviously wrong
+- the resync is what makes a model of unreadable remote state self-correcting,
+and 6.6k records what happened the one time drift went unnoticed.
+`ELIDE_RESYNC_FRAMES` trades its cost against how fast drift is repaired (120
+frames = 4 rows/frame = whole screen in 1.9 s). Left alone deliberately: the
+marking is now proven correct with the net off (13 wraps, 6.6k), but "proven for
+this workload" is not "proven for every future one".
+
 ---
 
 ## 6. Milestone 2 — SH8601 bring-up from registers

@@ -47,29 +47,35 @@ int main(void)
 
     /* ---- 1. THE CASE THE OLD MODEL COULD NOT EXPRESS ---- */
     gfx_solid(0, 100, BG);
+    (void)gfx_present();            /* sync g_sent so the next diff is clean */
     stub_reset();
     n = gfx_rect(80, 10, 167, 20, FG);
-    check(n == 11u, "centred rect marks exactly its 11 rows");
+    check(n == 11u, "centred rect changes exactly its 11 rows");
     check(band_is(15, 0, 79, BG),    "  columns left of a centred rect are bg");
     check(band_is(15, 80, 167, FG),  "  columns inside a centred rect are fg");
     check(band_is(15, 168, W - 1, BG), "  columns right of a centred rect are bg");
     check(band_is(5, 0, W - 1, BG),  "  rows outside the rect are untouched");
 
     /* ---- 2. the dirty extent is the COLUMNS, not the row ---- */
+    (void)gfx_present();
     check(marked(15, &x0, &x1) && x0 == 80 && x1 == 167,
           "dirty extent is the rect's columns, not 0..367");
 
     /* ---- 3. redundant draw is fully elided ---- */
     stub_reset();
     n = gfx_rect(80, 10, 167, 20, FG);
+    (void)gfx_present();
     check(n == 0u, "redrawing an identical rect changes 0 rows");
     check(g_nmarks == 0, "  and marks nothing");
 
     /* ---- 4. a rect of the same colour inside a solid field is a no-op ---- */
     gfx_solid(200, 210, BG);
+    (void)gfx_present();
     stub_reset();
     n = gfx_rect(100, 200, 200, 210, BG);
+    (void)gfx_present();
     check(n == 0u, "same-colour rect inside a solid field is elided");
+    check(g_nmarks == 0, "  and transmits nothing");
 
     /* ---- 5. outward grid snap: cover, never clip ---- */
     gfx_solid(300, 300, BG);
@@ -114,39 +120,53 @@ int main(void)
     stub_reset();
     (void)gfx_rect(80, 420, 167, 430, BG);      /* erase */
     (void)gfx_rect(88, 420, 175, 430, FG);      /* redraw 8px right */
+    (void)gfx_present();
     check(marked(425, &x0, &x1) && x0 == 80 && x1 == 175,
           "a moved rect marks only the columns that changed");
     check((x1 - x0 + 1) < W / 2, "  which is under half the row");
 
-    /* ---- 10. KNOWN LIMIT: erase-then-draw marks the overlap twice ----
+    /* ---- 10. erase-then-draw costs only the NET change ----
      *
-     * gfx diffs against the CURRENT model, not against what was last
-     * presented. An erase followed by a draw takes the overlapping rows
-     * FG -> BG -> FG: net unchanged, but both transitions mark them, so they
-     * are transmitted for nothing.
-     *
-     * Marking is a strict SUPERSET of what changed, so this is a waste, never a
-     * correctness bug - the panel is right, we just paid too much. Asserted as
-     * a superset here, with the cost printed, so the day present-time diffing
-     * lands the improvement is visible rather than assumed. */
+     * This is what present-time diffing buys. gfx used to diff at SET time
+     * against the model in flight, so erasing a box and drawing it 4 px lower
+     * took the overlapping rows FG -> BG -> FG and marked them twice: 92 rows
+     * and 8,096 px for 8 rows and 704 px of real change, 11.5x. Diffing at
+     * present against what the panel actually holds makes the intermediate
+     * state free. */
     gfx_solid(0, 447, BG);
     (void)gfx_rect(136, 100, 223, 187, FG);
     (void)gfx_present();
     stub_reset();
     (void)gfx_rect(136, 100, 223, 187, BG);      /* erase */
     (void)gfx_rect(136, 104, 223, 191, FG);      /* draw 4px lower */
+    (void)gfx_present();
     {
         int y, rows = 0, px = 0, a, b;
         for (y = 0; y < SH8601_HEIGHT; y++)
             if (marked(y, &a, &b)) { rows++; px += (b - a + 1); }
-        /* the 8 rows that NET changed must all be marked */
+        check(rows == 8,  "erase-then-draw marks only the 8 net-changed rows");
+        check(px == 8 * 88, "  and only their 704 pixels (was 8,096)");
         check(marked(100, &a, &b) && marked(103, &a, &b) &&
               marked(188, &a, &b) && marked(191, &a, &b),
-              "every net-changed row is marked (superset, so correct)");
-        printf("     note: %d rows / %d px marked for %d rows / %d px of real\n"
-               "           change - %.1fx, awaiting present-time diffing\n",
-               rows, px, 8, 8 * 88, (double)px / (8 * 88));
+              "  the rows that did change are all present");
+        check(!marked(150, &a, &b),
+              "  a row that went FG->BG->FG is not transmitted");
     }
+
+    /* ---- 10b. gfx_split composes as two rects ---- */
+    gfx_solid(440, 440, BG);
+    (void)gfx_split(440, 440, FG, C3, 160);
+    check(band_is(440, 0, 159, FG) && band_is(440, 160, W - 1, C3),
+          "gfx_split renders as a left band and a right band");
+
+    /* ---- 11. a change reverted before present costs nothing at all ---- */
+    gfx_solid(0, 447, BG);
+    (void)gfx_present();
+    stub_reset();
+    (void)gfx_rect(0, 40, 367, 60, FG);          /* draw ... */
+    (void)gfx_rect(0, 40, 367, 60, BG);          /* ... and undo it */
+    (void)gfx_present();
+    check(g_nmarks == 0, "a change reverted before present transmits nothing");
 
     printf("%s (%d failure%s)\n", g_fails ? "FAILED" : "OK",
            g_fails, g_fails == 1 ? "" : "s");
