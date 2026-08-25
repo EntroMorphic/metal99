@@ -131,6 +131,40 @@ static uint32_t reference_x(int rows, int x0, int x1)
     return vec_fold_get();
 }
 
+/*
+ * The glyph blit's ASSEMBLY, against a scalar reference, on the device.
+ *
+ * tests/host exercises vec_glyph_row's scalar MIRROR in vec_host.c, not the
+ * EE.* version the firmware actually runs - so until now the real blit was
+ * verified by looking at the panel, which is the loop this harness exists to
+ * replace. Text that is subtly wrong still looks like text.
+ *
+ * Patterns chosen to separate the failure modes: 0xA5 alternates (bit order),
+ * 0x00 must leave the destination untouched (transparency), 0xFF must replace
+ * all eight (mask polarity), 0x3C is neither end (no edge-only luck).
+ */
+static int selftest_glyph(void)
+{
+    static uint16_t VEC_ALIGN got[32];
+    static uint16_t VEC_ALIGN want[32];
+    static const uint8_t VEC_ALIGN pat[16] = { 0xA5u, 0x00u, 0xFFu, 0x3Cu };
+    const uint16_t bg = 0x1234u, fg = 0xBEEFu;
+    int i, b, bad = 0;
+
+    for (i = 0; i < 32; i++) { got[i] = bg; want[i] = bg; }
+    for (b = 0; b < 4; b++)
+        for (i = 0; i < 8; i++)
+            if ((pat[b] & (0x80u >> i)) != 0u) want[b * 8 + i] = fg;
+
+    vec_glyph_row(got, pat, 4u, fg);
+
+    for (i = 0; i < 32; i++) if (got[i] != want[i]) bad++;
+    con_puts("\r\nself-test: GLYPH BLIT\r\n  32 px vs scalar reference: ");
+    if (bad == 0) { con_puts("PASS\r\n"); return 0; }
+    con_puts("FAIL, "); con_dec((int32_t)bad); con_puts(" px differ\r\n");
+    return 1;
+}
+
 int selftest_transport(void)
 {
     /*
@@ -249,6 +283,8 @@ int selftest_transport(void)
             }
         }
     }
+
+    fails += selftest_glyph();
 
     /*
      * VALIDATE THE INSTRUMENT.

@@ -21,6 +21,7 @@ except ImportError:
     sys.exit("Pillow missing: pip install Pillow")
 
 FIRST, LAST = 0x20, 0x7E          # printable ASCII
+PROBE = 48                        # scratch margin when measuring ink extent
 
 # (C identifier, ttf, pixel size, cell width, cell height)
 # Sizes chosen by rendering and LOOKING at the 1bpp result, not from metrics:
@@ -41,17 +42,60 @@ FONTS = [
 # here until one is made.
 
 
+def ink_box(font):
+    """Union ink bbox over printable ASCII, relative to the pen origin.
+
+    MEASURED, NOT TAKEN FROM METRICS. The first version placed the baseline
+    from font.getmetrics() - ascent if it fitted, else ch - descent. Those are
+    NOMINAL values that need not match where the outlines actually put ink, and
+    for Share Tech Mono at 15 px they did not: ascent+descent came to 18 against
+    a 16-row cell, the fallback put the baseline at row 12, and eleven glyphs -
+    $ ( ) / [ \\ ] ^ { | } - lost their top row. Silently. The bitmaps were
+    wrong and nothing said so, because a clipped bracket still looks like a
+    bracket until you compare it with one that is not.
+    """
+    lo_x = hi_x = lo_y = hi_y = None
+    for cp in range(FIRST, LAST + 1):
+        img = Image.new("L", (PROBE * 3, PROBE * 3), 0)
+        ImageDraw.Draw(img).text((PROBE, PROBE), chr(cp), font=font, fill=255,
+                                 anchor="ls")
+        bb = img.getbbox()
+        if bb is None:
+            continue                                  # blank, e.g. space
+        x0, y0, x1, y1 = (bb[0] - PROBE, bb[1] - PROBE,
+                          bb[2] - PROBE, bb[3] - PROBE)
+        lo_x = x0 if lo_x is None else min(lo_x, x0)
+        hi_x = x1 if hi_x is None else max(hi_x, x1)
+        lo_y = y0 if lo_y is None else min(lo_y, y0)
+        hi_y = y1 if hi_y is None else max(hi_y, y1)
+    return lo_x, hi_x, lo_y, hi_y
+
+
 def render(ttf, px, cw, ch):
     """Return [bytes] per glyph, row-major, (cw/8) bytes per row."""
     font = ImageFont.truetype(ttf, px)
-    ascent, descent = font.getmetrics()
-    # Baseline placed so ascender and descender both fit the cell.
-    base = ascent if ascent + descent <= ch else ch - descent
+    lo_x, hi_x, lo_y, hi_y = ink_box(font)
+    adv = font.getlength("M")
+
+    # Baseline placed so the TOPMOST ink in the whole set lands on row 0, and
+    # the pen shifted right if any glyph reaches left of the origin.
+    base = -lo_y
+    xoff = -lo_x if lo_x < 0 else 0
+
+    # REFUSE to generate a font that does not fit. Clipping here is invisible
+    # downstream: the device blits whatever bytes it is given.
+    ink_w, ink_h = hi_x - lo_x, hi_y - lo_y
+    if ink_h > ch or ink_w > cw or adv > cw + 0.999:
+        raise SystemExit(
+            "%s at %dpx does not fit a %dx%d cell:\n"
+            "  ink %dx%d, advance %.2f  (need ink <= %dx%d, advance <= %d)"
+            % (ttf.split("/")[-1], px, cw, ch, ink_w, ink_h, adv, cw, ch, cw))
+
     bpr = cw // 8
     out = []
     for cp in range(FIRST, LAST + 1):
         img = Image.new("L", (cw, ch), 0)
-        ImageDraw.Draw(img).text((0, base), chr(cp), font=font, fill=255,
+        ImageDraw.Draw(img).text((xoff, base), chr(cp), font=font, fill=255,
                                  anchor="ls")
         px_ = img.load()
         g = bytearray()
@@ -71,7 +115,9 @@ def render(ttf, px, cw, ch):
 
 def emit(fh, name, ttf, px, cw, ch, glyphs):
     bpr = cw // 8
-    fh.write("\n/* %s - %s at %d px, %dx%d cell, %d glyphs, %d bytes */\n"
+    fh.write("\n/* %s - %s at %d px, %dx%d cell, %d glyphs, %d bytes.\n"
+             " * Baseline measured from actual ink extent, not font metrics;\n"
+             " * the generator refuses to emit a font whose ink does not fit. */\n"
              % (name, ttf.split("/")[-1], px, cw, ch, len(glyphs),
                 len(glyphs) * ch * bpr))
     fh.write("static const uint8_t %s_bits[] = {\n" % name)
