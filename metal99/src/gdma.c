@@ -115,10 +115,23 @@ void gdma_init(void)
     GDMA_OUT_INT_CLR_CH0 = 0xFFFFFFFFu;
 }
 
+/*
+ * Full channel reset then re-arm.
+ *
+ * NOT CURRENTLY CALLED, and the comment here used to say "see
+ * spi2_dma_finish()" - which does the exact opposite on purpose. Retrying a
+ * transfer in place re-sends a band into a CS-held stream where the panel is
+ * auto-incrementing through a fixed address window, shifting everything after
+ * it; spi2_dma_finish() therefore aborts the span instead. Read that comment
+ * before wiring this to anything.
+ *
+ * Kept because the swallowed-first-start behaviour it was written for is
+ * characterised but not explained (DESIGN.md 6.6i), and a channel reset is the
+ * obvious first instrument if it ever changes shape. --gc-sections drops it
+ * from the image, so it costs nothing to keep.
+ */
 int gdma_restart(const gdma_desc *first)
 {
-    /* Full channel reset then re-arm. Used to recover a transfer that never
-     * began - see spi2_dma_finish(). */
     GDMA_OUT_CONF0_CH0 = OUT_RST;
     GDMA_OUT_CONF0_CH0 = 0u;
     /* HYPOTHESIS: OUTDSCR_BURST_EN prefetches descriptors in bursts. Our

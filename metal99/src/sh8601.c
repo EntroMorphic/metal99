@@ -65,28 +65,25 @@ int sh8601_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
 }
 
 static int g_use_dma = 0;
-static gdma_desc g_desc;               /* one row fits: 736 B < 4095 B */
 
 void sh8601_set_dma(int on) { g_use_dma = on; }
 
 static int g_overlap = 1;
 void sh8601_set_overlap(int on) { g_overlap = on; }
 
-/* Chunked send with CS held throughout; only the very last chunk of the very
- * last row releases it. The panel treats a CS rise as end-of-write. */
+/*
+ * Chunked send with CS held throughout; only the very last chunk of the very
+ * last row releases it. The panel treats a CS rise as end-of-write.
+ *
+ * FIFO ONLY. This used to branch on g_use_dma and do one DMA per row, but
+ * sh8601_write_span() has sent DMA traffic through the banded path since
+ * DESIGN.md 6.6j and only ever calls stream() from its !g_use_dma branch - so
+ * that half was unreachable, along with the descriptor and the debug accessor
+ * that read it. It looked live, which is worse than being absent. The
+ * one-DMA-per-row measurements it produced are recorded in DESIGN.md 6.6i.
+ */
 static int stream(const uint8_t *d, uint32_t n, int final_row)
 {
-    if (g_use_dma) {
-        /* The descriptor size/length fields are 12 bits. A longer transfer
-         * would silently WRAP, sending the wrong byte count with no error -
-         * and banding, the next feature, will push right past this limit. */
-        if (n > GDMA_MAX_XFER) return SPI2_E_LEN;
-        g_desc.dw0    = GDMA_DW0(n, n, 1);
-        g_desc.buffer = d;
-        g_desc.next   = NULL;
-        return spi2_xfer_dma(&g_desc, n, 1 /* quad */, final_row ? 0 : 1);
-    }
-
     while (n > 0u) {
         uint32_t c = (n > (uint32_t)SPI2_FIFO_BYTES) ? (uint32_t)SPI2_FIFO_BYTES : n;
         int is_last = (final_row != 0) && (c == n);
@@ -153,7 +150,6 @@ int sh8601_write_span(uint16_t y0, uint16_t y1, void (*rowfn)(uint16_t *row, int
     uint32_t t_frame = cpu_cycles();
     uint32_t t_mark;
     int rc, y, b = 0, pending = 0, pend_rows = 0;
-    int total = (int)y1 - (int)y0 + 1;
 
     if (rowfn == NULL)                  return SPI2_E_NULL;
     if (y1 < y0 || y1 >= SH8601_HEIGHT) return SPI2_E_LEN;
@@ -244,7 +240,6 @@ int sh8601_write_span(uint16_t y0, uint16_t y1, void (*rowfn)(uint16_t *row, int
         if (rc != SPI2_OK) { spi2_cs_release(); return rc; }
         g_stats.bytes += (uint32_t)pend_rows * SH8601_WIDTH * 2u;
     }
-    (void)total;
     g_stats.total_cycles = cpu_cycles() - t_frame;
     return SPI2_OK;
 }
@@ -253,8 +248,6 @@ int sh8601_write_frame(void (*rowfn)(uint16_t *row, int y))
 {
     return sh8601_write_span(0u, (uint16_t)(SH8601_HEIGHT - 1), rowfn);
 }
-
-uint32_t sh8601_dbg_desc(void) { return g_desc.dw0; }
 
 int sh8601_sleep(void)
 {

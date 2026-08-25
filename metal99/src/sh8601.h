@@ -68,15 +68,21 @@ int sh8601_scroll_def(uint16_t tfa, uint16_t vsa, uint16_t bfa);
 int sh8601_scroll_start(uint16_t row);
 
 /*
- * Telemetry from the REAL workload - no synthetic probe traffic. Populated by
- * sh8601_write_frame(); read after each frame. Measuring the actual work is
- * both more honest and structurally incapable of corrupting the panel, which
- * synthetic probing did.
+ * Telemetry from the REAL workload - no synthetic probe traffic. Measuring the
+ * actual work is both more honest and structurally incapable of corrupting the
+ * panel, which synthetic probing did.
+ *
+ * PER SPAN, NOT PER FRAME. This is reset and refilled by every
+ * sh8601_write_span() call, and elide_flush() issues one span per contiguous
+ * dirty run - so reading it after a frame gives you the LAST span only. The
+ * header used to say "read after each frame", which was true when write_frame()
+ * was the only caller and quietly stopped being true when elision landed.
+ * elide_stats accumulates these across a frame; use that for frame figures.
  */
 typedef struct {
     uint32_t render_cycles;   /* time inside the caller's rowfn        */
     uint32_t flush_cycles;    /* time pushing bytes to the panel       */
-    uint32_t total_cycles;    /* whole frame, including command setup  */
+    uint32_t total_cycles;    /* whole span, including command setup   */
     uint32_t bytes;           /* pixel bytes actually transmitted      */
 } sh8601_stats;
 
@@ -97,9 +103,5 @@ void sh8601_set_dma(int on);
  * With overlap off, each band's DMA is collected before the next is rendered.
  */
 void sh8601_set_overlap(int on);
-
-/* Descriptor word 0 after the last DMA row - owner bit tells us whether the
- * engine ever consumed it. */
-uint32_t sh8601_dbg_desc(void);
 
 #endif /* SH8601_PANEL_H */

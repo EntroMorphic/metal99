@@ -1,6 +1,6 @@
 #include "io.h"
 
-uint32_t g_cpu_hz = CPU_HZ_BOOT;   /* updated by clk_set_cpu() */
+uint32_t g_cpu_hz = CPU_HZ_BOOT;   /* updated by clk_set_cpu_pll() */
 
 /*
  * TELEMETRY MUST NOT PERTURB THE SYSTEM IT MEASURES.

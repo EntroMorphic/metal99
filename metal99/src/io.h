@@ -21,7 +21,7 @@
  * The ROM leaves the CPU at 20 MHz (XTAL/2), measured. Switching to the PLL
  * changes it by up to 12x, and every delay and every telemetry figure is
  * derived from this number - so a stale constant would silently misreport all
- * of them, including the SH8601's 120 ms sleep-out MINIMUM. clk_set_cpu()
+ * of them, including the SH8601's 120 ms sleep-out MINIMUM. clk_set_cpu_pll()
  * updates it as part of the switch; the two cannot drift apart.
  */
 extern uint32_t g_cpu_hz;
