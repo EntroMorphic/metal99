@@ -1178,6 +1178,73 @@ Row fill of 368 px: **364 cycles = 0.99 cycles/pixel** (scalar was ~3-4).
 Verified on hardware: fill, zero and copy all produce correct data, and the
 panel renders from vectorised fills.
 
+### 6.9a Why the rule exists HERE, and what it costs to break
+
+Measured 2026-08-24 with `tools/isa_probe.sh` and instruction counts from the
+real toolchain, because "scalar is slow" is a generic claim and this project
+should carry a specific one.
+
+**1bpp glyph expansion**, the shape all text rendering reduces to - broadcast a
+byte of glyph bits, isolate one bit per lane, select fg/bg:
+
+| | instr/pixel | 368-px row | of the 69 us row cost |
+|---|---|---|---|
+| scalar | **9.0** | 20.7 us | 30% |
+| vector | **1.375** | 3.16 us | 4.6% |
+
+**6.5x**, in 11 instructions that fit exactly the 8 available q registers:
+
+```
+ee.vldbc.8     q0, bits    broadcast the glyph byte to all lanes
+ee.andq        q0, q0, q1  isolate one bit per lane {0x80,0x40,...,0x01}
+ee.vcmp.eq.s16 q3, q0, q2  mask = lanes whose bit was clear
+ee.notq        q4, q3
+ee.andq        q7, q6, q3  bg where clear
+ee.andq        q0, q5, q4  fg where set
+ee.orq         q0, q0, q7
+ee.vst.128.ip  q0, dst, 16
+```
+
+(Instruction counts, not measured cycles: several of these are multi-cycle and
+the scalar loop uses Xtensa's zero-overhead `loop`. The ratio is indicative.)
+
+**THE REASON IS NOT "SCALAR IS SLOW". IT IS THAT THE THESIS DEPENDS ON COMPUTE
+STAYING NEGLIGIBLE.**
+
+Rendering is currently 0.002 ms/row - **1.4% of a frame**. That figure is what
+makes 3.0 true: the panel is wire-bound, so the only lever is sending fewer
+bytes. Scalar text would take rendering to 30% of a frame, and at that point
+there is no longer one bottleneck to reason about linearly - there are two, and
+"the fastest pixel is the one never sent" stops being the dominant lever.
+
+So the rule is: **keep compute negligible so the system stays wire-bound.**
+That is also what says when it may be relaxed - the digest (fold.c) and the host
+harness are exempt precisely because they are not on the render path and do not
+move the compute-to-wire ratio.
+
+### 6.9b Where the ISA actually runs out
+
+Probed on gcc 14.2.0. What is missing matters as much as what is present.
+
+| want | available | consequence |
+|---|---|---|
+| permute / gather (`vperm`, `vtbl`, `vshuf`, `vgather`, `vsel`, `vlut`) | **none** | no single-instruction table lookup; palette expansion costs `(5N+4)` instr per 8 px and only beats scalar below ~12 entries (5.1) |
+| 16-bit vector shift (`vsr.16`, `vsl.16`, `vsra.16`) | **none** - only `.32` | RGB565 channel extraction has no clean path |
+| funnel shift across two vectors | `ee.src.q`, `ee.slci.2q`, `ee.srci.2q` | unaligned glyph placement IS covered |
+| compare + logical | `ee.vcmp.eq/lt/gt`, `andq`, `orq`, `notq` | a complete SELECT primitive - the workhorse for glyphs and palettes |
+
+The missing 16-bit shift is the one real wall. Anything needing per-channel
+arithmetic on packed RGB565 - alpha blending, anti-aliased text, gradients,
+fades, colour interpolation - has to drop to 32-bit lanes (4 px per vector
+instead of 8) or fake a left shift with `ee.vmul.s16` by 2^k. Right shift has no
+clean path at 16-bit width. **Crisp 1bpp text needs none of this; anti-aliased
+text needs all of it.**
+
+None of this is surprising once you notice what DOES assemble: `ee.vrelu.s16`,
+`ee.vprelu.s16`, and `ee.vmulas.*` into 40-bit accumulators. This is the AI
+extension - built for inference MACs and activations. Table lookup and channel
+swizzling were never design targets.
+
 ### Where scalar remains, and why
 
 | Site | Status |
@@ -1185,12 +1252,12 @@ panel renders from vectorised fills.
 | Row fills | vectorised (`vec_fill16`) |
 | `.bss` zeroing | **vectorised** - linker aligns/pads `.bss` to whole 128-bit vectors so `vec_zero` covers it with no scalar tail |
 | Vertical gradient | vectorised - one colour per ROW (448/frame), then a broadcast fill |
-| `spi2_xfer` FIFO load | **vectorised** - see 6.8a |
+| `spi2_xfer` FIFO load | **vectorised** - see 6.9c |
 | `sh8601_rgb565` | single value, not bulk |
 | `con_dec` | console formatting |
 | Loop counters, addresses, branches | inherent control flow |
 
-### 6.9a Vectorised MMIO - both blockers dissolved
+### 6.9c Vectorised MMIO - both blockers dissolved
 
 I had written off vectorising the FIFO load. Both reasons turned out to be
 wrong, and testing them cost under an hour.
