@@ -221,6 +221,12 @@ Doing it at build time also makes the typeface a choice rather than whatever
 console font happens to be installed. Change the size, the weight or the family
 by editing one table in the generator.
 
+`Share Tech` (proportional) is tracked alongside the mono but **not generated**.
+The label layer places glyph *c* at `x + c*w` — one uniform advance — and every
+glyph starting on the 8px grid is what lets the blit run with no masking and no
+unaligned path. Proportional text needs a per-glyph advance table and either
+sub-grid placement or quantised spacing. Neither is hard; both are decisions.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

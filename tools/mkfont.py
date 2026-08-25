@@ -30,6 +30,16 @@ FONTS = [
     ("share_mono_16x32", "tools/fonts/ShareTechMono-Regular.ttf", 29, 16, 32),
 ]
 
+# tools/fonts/ShareTech-Regular.ttf is tracked but NOT generated, deliberately.
+# It is proportional, and gfx's label layer places glyph c at x + c*font->w -
+# one uniform advance. Proportional text needs a per-glyph advance table, and
+# that breaks the property the blit depends on: every glyph starting on the 8px
+# grid, so it occupies whole 128-bit vectors with no masking and no unaligned
+# path. Supporting it means either accepting sub-grid placement (a masked blit,
+# which the ISA can do - see DESIGN.md 6.9b) or quantising advances to 8px and
+# accepting loose spacing. Neither is hard; both are decisions, so the font sits
+# here until one is made.
+
 
 def render(ttf, px, cw, ch):
     """Return [bytes] per glyph, row-major, (cw/8) bytes per row."""
