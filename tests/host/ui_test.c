@@ -9,6 +9,11 @@
  */
 #include <stdio.h>
 #include "ui.h"
+#include "app.h"
+#include "gfx.h"
+#include "font.h"
+#include "sh8601.h"
+#include "elide.h"
 #include "gfx_stubs.h"
 
 static int g_fails;
@@ -40,6 +45,36 @@ static void reset(void)
     stub_touch_set(0, 0, 0, 0);
     ui_poll(on_event);
     n_press = n_drag = n_release = n_tap = n_long = 0;
+}
+
+/*
+ * Which character is rendered at (x, y)?
+ *
+ * Renders the label's rows, extracts the bit pattern in that glyph cell, and
+ * matches it against the font. Reading the SCREEN rather than the app's
+ * internals: a test that inspected app state would have agreed with the bug it
+ * was supposed to catch, because the state was self-consistent and wrong.
+ */
+static char glyph_at(int x, int y, const gfx_font *f)
+{
+    static uint16_t row[SH8601_WIDTH];
+    unsigned g;
+    int r, c, bpr = f->w / 8;
+    for (g = 0; g < f->count; g++) {
+        int match = 1;
+        for (r = 0; r < (int)f->h && match; r++) {
+            stub_render(y + r, row);
+            for (c = 0; c < (int)f->w && match; c++) {
+                uint8_t bits = f->bits[((g * f->h) + (unsigned)r) * (unsigned)bpr
+                                       + (unsigned)(c / 8)];
+                int ink_font   = (bits & (0x80u >> (c % 8))) != 0;
+                int ink_screen = row[x + c] != row[SH8601_WIDTH - 1]; /* vs bg */
+                if (ink_font != ink_screen) match = 0;
+            }
+        }
+        if (match) return (char)(f->first + g);
+    }
+    return '?';
 }
 
 int main(void)
@@ -106,6 +141,52 @@ int main(void)
     stub_touch_set(1, 300, 300, 4); ui_poll(on_event);
     check(n_press == 2 && n_release == 1,
           "a different id is a new contact and retires the old one");
+
+    /* ---- a failed controller read releases, but never taps ---- */
+    reset();
+    stub_touch_set(1, 100, 100, 6); ui_poll(on_event);
+    stub_advance_ms(30u);
+    stub_touch_fail(1);             ui_poll(on_event);
+    stub_touch_fail(0);
+    check(n_release == 1, "an I2C failure releases the contact (fail safe)");
+    check(n_tap == 0, "  but does NOT fire a tap - a failed read is not a lift");
+
+    /* ---- releasing one of two fingers keeps the RIGHT one on screen ----
+     *
+     * The demo kept a count and indexed by it: press A, press B, release A, and
+     * the count fell to 1 while slot 0 still held A - so the display showed the
+     * finger that had LEFT and hid the one still down. A count is not a set.
+     * Checked by reading the rendered glyph, not the app's variables. */
+    {
+        const gfx_font *F = &share_mono_16x32;
+        char c1, c2;
+
+        gfx_init();
+        ui_init();
+        elide_set_resync(0u);
+        if (APP.init) APP.init();
+        (void)gfx_present();
+
+        stub_touch_set(1, 100, 100, 7);            /* finger 7 down */
+        ui_poll(APP.event);
+        stub_touch_set2(200, 200, 9);              /* finger 9 down too */
+        ui_poll(APP.event);
+        APP.frame(0u);
+        (void)gfx_present();
+        c1 = glyph_at(16, 56, F);
+        c2 = glyph_at(16, 96, F);
+        check(c1 == '7' && c2 == '9', "two contacts show both ids, in order");
+
+        stub_touch_set(1, 200, 200, 9);            /* finger 7 lifts */
+        ui_poll(APP.event);
+        APP.frame(1u);
+        (void)gfx_present();
+        c1 = glyph_at(16, 56, F);
+        check(c1 == '9', "releasing the first finger leaves the SECOND on screen");
+        /* A cleared region has no ink, which matches the SPACE glyph - the
+         * font's only blank one. Not '?': the region is legitimately empty. */
+        check(glyph_at(16, 96, F) == ' ', "  and the second line is cleared");
+    }
 
     printf("%s (%d failure%s)\n", g_fails ? "FAILED" : "OK",
            g_fails, g_fails == 1 ? "" : "s");

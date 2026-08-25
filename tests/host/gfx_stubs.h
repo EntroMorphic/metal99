@@ -8,6 +8,8 @@ extern int    g_nmarks;
 void stub_reset(void);
 void stub_advance_ms(uint32_t ms);
 void stub_touch_set(int n, int x, int y, int id);
+void stub_touch_set2(int x, int y, int id);
+void stub_touch_fail(int on);
 void stub_render(int y, uint16_t *row);
 #endif
 int marked(int y, int *x0, int *x1);

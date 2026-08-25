@@ -109,9 +109,15 @@ int main(int argc, char **argv)
         /* A brief tap early (so TAPS increments and the counter is not always
          * zero), then a finger held down for the rest, so the final image shows
          * the touch readout rather than an idle screen. */
+        /* A brief tap early so the counter is not always zero, then one finger
+         * dragging, then a SECOND finger joining for the last quarter - so the
+         * final image exercises the multi-touch path rather than showing an
+         * idle screen. */
         if (f == 10 || f == 11) stub_touch_set(1, 120, 60, 3);
-        else if (f > frames / 3) stub_touch_set(1, 40 + (f % 200), 150 + (f / 4), 0);
-        else stub_touch_set(0, 0, 0, 0);
+        else if (f > frames / 3) {
+            stub_touch_set(1, 40 + (f % 200), 150 + (f / 4), 0);
+            if (f > (3 * frames) / 4) stub_touch_set2(220 - (f % 90), 300, 5);
+        } else stub_touch_set(0, 0, 0, 0);
 
         ui_poll(APP.event);
         if (APP.frame) APP.frame((uint32_t)f);

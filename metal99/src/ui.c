@@ -51,10 +51,22 @@ void ui_poll(void (*cb)(const ui_event *e))
 {
     touch_state ts;
     int seen[TOUCH_MAX_POINTS];
-    int i, j;
+    int i, j, ok;
 
     for (i = 0; i < TOUCH_MAX_POINTS; i++) seen[i] = 0;
-    if (touch_poll(&ts) != TOUCH_OK) ts.n = 0u;
+
+    /*
+     * A FAILED READ IS NOT A LIFT.
+     *
+     * Treating an I2C error as "no contacts" releases everything, which is the
+     * right fail-safe - a phantom finger stuck down is worse. But the release
+     * path also decides whether something was a TAP, and a transient glitch
+     * while a finger rested briefly would then fire a tap the user never made,
+     * activating a button. Release yes; tap no. We know the contact is gone,
+     * we do not know it was lifted.
+     */
+    ok = (touch_poll(&ts) == TOUCH_OK);
+    if (!ok) ts.n = 0u;
 
     /* Contacts still down: match by id, then PRESS / DRAG / LONG. */
     for (i = 0; i < (int)ts.n; i++) {
@@ -94,7 +106,8 @@ void ui_poll(void (*cb)(const ui_event *e))
         slot *s = &g_slot[j];
         if (!s->down || seen[j]) continue;
         emit(cb, s, UI_RELEASE);
-        if (ms_since(s->t0) <= UI_TAP_MS &&
+        if (ok &&
+            ms_since(s->t0) <= UI_TAP_MS &&
             idist((int)s->x, (int)s->ax) <= UI_TAP_SLOP &&
             idist((int)s->y, (int)s->ay) <= UI_TAP_SLOP) {
             emit(cb, s, UI_TAP);

@@ -33,8 +33,8 @@ png: gfx_png
 	@python3 ../../tools/topng.py out_ideal.ppm out_panel.ppm out_diff.ppm
 
 ui_test: ui_test.c gfx_stubs.c ../../metal99/src/ui.c ../../metal99/src/gfx.c \
-         ../../metal99/src/elide.c ../../metal99/src/font_share.c vec_host.c \
-         $(FOLD) $(RGB)
+         ../../metal99/src/elide.c ../../metal99/src/app_demo.c \
+         ../../metal99/src/font_share.c vec_host.c $(FOLD) $(RGB)
 	$(CC) $(CFLAGS) $^ -o $@
 
 test: digest_test gfx_test ui_test

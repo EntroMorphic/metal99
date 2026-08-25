@@ -124,6 +124,28 @@ one continuous run.
   which is part of how the constant-zero return went unnoticed. It now prints
   the return value, so the two disagreeing would be visible.
 
+### Fixed — found by red-teaming the app boundary
+- **Releasing one of two fingers displayed the wrong one.** The demo kept a
+  *count* and indexed by it: press A, press B, release A, and the count fell to
+  1 while slot 0 still held A — so the readout showed the finger that had left
+  and hid the one still down. A count is not a set, and events arrive per
+  contact, not per slot. Contacts are now tracked by identity and compacted on
+  release.
+- **A failed controller read fired a phantom TAP.** Treating an I2C error as
+  "no contacts" is the right fail-safe — a finger stuck down is worse — but the
+  release path also decides what was a tap, so a transient glitch while a finger
+  rested briefly would activate a button nobody pressed. Release yes, tap no:
+  we know the contact is gone, we do not know it was lifted.
+- The simulator could only produce **one** contact, which is how the two-finger
+  bug went unnoticed. It drives two now, and the regression test reads the
+  **rendered glyph** rather than the app's variables — a test inspecting app
+  state would have agreed with the bug, because that state was self-consistent
+  and wrong.
+- Documented a real limit: contacts are matched by the controller's tracking id
+  and the controller reuses ids, so a lift and a different press sharing an id
+  inside one 16 ms frame reads as one contact moving. The controller never
+  reports the gap, so nothing here can see it.
+
 ### Added — an application boundary
 - **`app.h`**: an app is three callbacks and a name. `main.c` owns bringing the
   hardware up and proving it works; the app owns what is on the screen. It was

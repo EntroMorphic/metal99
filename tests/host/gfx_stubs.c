@@ -67,13 +67,32 @@ uint32_t cpu_cycles(void) { return g_cyc; }
 void stub_advance_ms(uint32_t ms) { g_cyc += ms * (g_cpu_hz / 1000u); }
 
 static touch_state g_ts;
+
 void stub_touch_set(int n, int x, int y, int id)
 {
     g_ts.n = (uint8_t)n;
     if (n > 0) { g_ts.p[0].x = (uint16_t)x; g_ts.p[0].y = (uint16_t)y;
                  g_ts.p[0].id = (uint8_t)id; }
 }
-int touch_poll(touch_state *st) { *st = g_ts; return TOUCH_OK; }
+
+/* Second contact, so the multi-touch path is reachable from the simulator.
+ * Without it, everything two-finger was untested - which is how a release
+ * that removed the wrong contact went unnoticed. */
+void stub_touch_set2(int x, int y, int id)
+{
+    g_ts.n = 2u;
+    g_ts.p[1].x = (uint16_t)x; g_ts.p[1].y = (uint16_t)y;
+    g_ts.p[1].id = (uint8_t)id;
+}
+static int g_touch_fail;
+void stub_touch_fail(int on) { g_touch_fail = on; }
+
+int touch_poll(touch_state *st)
+{
+    if (g_touch_fail) return TOUCH_E_IO;
+    *st = g_ts;
+    return TOUCH_OK;
+}
 int touch_init(void) { return TOUCH_OK; }
 uint8_t touch_chip_id(void)   { return 0x64u; }
 uint8_t touch_vendor_id(void) { return 0x11u; }
