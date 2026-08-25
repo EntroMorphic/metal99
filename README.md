@@ -38,11 +38,17 @@ Measured on hardware:
 | | |
 |---|---|
 | Steady-state cadence | **60 Hz locked — zero late frames** |
-| Typical interface update, 104 rows | **7.3 ms of 16.67 ms — 2.2x headroom** |
+| Moving a full-width 96-row bar | **8 rows, 2,944 px — 0.6 ms, 26x headroom** |
 | Moving an 88x88 element | **1,968 px — 2% of the budget** |
+| A **stationary** element | **0 rows transmitted** |
 | The same frame drawn twice | **0 rows transmitted** |
 | A change made and reverted before present | **0 rows transmitted** |
-| Same workload, unpaced | **~140 fps** |
+| A full 448-row repaint | 31.2 ms — the one case that misses |
+
+A moving element costs its **leading and trailing edges**, not its area: a
+96-row bar stepping 4 px changes 8 rows, not 96. That is what diffing against
+what the panel actually holds buys, and it is why the headroom on real motion is
+26x rather than 2x.
 
 **Elision is what makes 60 Hz reachable at all.** Repainting every frame costs
 **31.2 ms** — 32 fps, measured, not extrapolated. Sending only what changed costs
@@ -61,6 +67,7 @@ screen. Measured, for one step of continuous motion:
 |---|---|---|
 | 88x88 element moving | **1,968** | 2% |
 | full-width 96-row bar moving | **4,931** | 6% |
+| the rolling resync alone | 1,472 | 2% |
 | 240 full rows | 88,320 | 99% — the boundary |
 | 448 rows (everything) | 164,864 | 185% — misses |
 

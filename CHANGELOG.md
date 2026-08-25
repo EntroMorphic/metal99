@@ -151,6 +151,26 @@ one continuous run.
 - 24 host assertions on the run model, linking the real `gfx.c` and stubbing
   only the layers beneath it.
 
+- **The long-run verification now drives `gfx`, not raw `elide`.** The 20 s
+  resync-off window with every wrap traced is the strongest check in the
+  project, and it called `elide_mark()` and `scene()` directly — testing elide's
+  marking and nothing above it. `g_sent`, the model of what the panel is
+  believed to hold, was the one layer it never touched, and a drift there
+  produces exactly the symptom the window exists to catch.
+
+  | pacing loop | rows | px | ms | headroom |
+  |---|---|---|---|---|
+  | stationary bar, resync on | 4 | 1,472 | 0.3 | 48.9x |
+  | moving bar, resync OFF | 8 | 2,944 | 0.6 | 26.2x |
+  | *previously, raw elide* | *100* | *36,800* | *7.0* | *2.3x* |
+
+  A moving element costs its leading and trailing edges, not its area. Every
+  wrap still marks exactly 192 rows in 2 spans through the new path.
+- **The sub-width transport had no ledger coverage.** Every self-test case
+  called the full-width wrapper, so the narrow-window path was verified only by
+  looking at the panel. Three cases now — a centred element, the first column
+  cell, the last column cell — all exact on hardware.
+
 ### Added (remediation)
 - `tests/host/digest_test.c` — 14 assertions on the transmit-ledger digest,
   runnable without a board, linking `metal99/src/fold.c` so the firmware's own

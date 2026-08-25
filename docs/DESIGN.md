@@ -391,6 +391,30 @@ tell the next diff those rows are already on the panel and the update would be
 lost for good - the precise "model drifts from reality" failure this layer
 exists to prevent.
 
+#### Verified over a long run, with the net down
+
+The 20 s resync-off window (6.6k) is the strongest verification here, and it
+used to drive `elide_mark()` and `scene()` directly - testing elide's marking
+and nothing above it. `g_sent`, the model of what the panel is believed to hold,
+was the one layer it did not touch, and a drift there produces exactly the
+symptom this window exists to catch. The loop now describes the scene through
+`gfx` instead, so the whole stack is under test and there is no hand-marking
+left in the demo to get wrong.
+
+| pacing loop, measured | rows | px | ms | headroom |
+|---|---|---|---|---|
+| stationary bar, resync on | 4 | 1,472 | 0.3 | 48.9x |
+| moving bar, resync OFF | 8 | 2,944 | 0.6 | 26.2x |
+| *(previously, raw elide)* | *100* | *36,800* | *7.0* | *2.3x* |
+
+**12.5x fewer pixels, and headroom from 2.3x to 26.2x.** A moving element now
+costs its leading and trailing edges rather than its area: a 96-row bar stepping
+4 px changes 8 rows. A stationary element costs nothing at all - the 4 rows in
+the first line are the resync alone.
+
+Every wrap still marks exactly 192 rows in 2 spans, through the new path: at the
+wrap old and new do not overlap, so both bands are genuine net changes.
+
 #### The safety net is now the dominant cost
 
 The rolling resync refreshes 4 full-width rows every frame: 1,472 px, against

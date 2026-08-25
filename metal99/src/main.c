@@ -33,6 +33,10 @@
 #define BOX_H 88u
 #define BGCOL sh8601_rgb565(0, 20, 60)
 #define FGCOL sh8601_rgb565(255, 70, 0)
+/* The pacing loop's palette: an unlit background, so any pixel that should have
+ * been erased and was not is unmistakable on an AMOLED. */
+#define BLACKCOL sh8601_rgb565(0, 0, 0)
+#define BARCOL   sh8601_rgb565(255, 60, 0)
 static int g_bar_y;
 
 static void scene(uint16_t *row, int y)
@@ -204,16 +208,17 @@ void app_entry(void)
     g_bar_y = SH8601_HEIGHT / 2 - BAR_H / 2;   /* start centred, not at the edge */
 
     /*
-     * Full repaint before the pacing loop takes over.
+     * Establish the scene through gfx before the pacing loop takes over.
      *
-     * The gfx demo leaves a blue background on the panel; scene() draws black.
-     * Without this the first paced frame marks only the bar's rows and the old
-     * background survives underneath - repaired a few frames later by the
-     * rolling resync, which is why it was never noticed. With the resync
-     * switched off below it would sit there for twenty seconds and look
-     * exactly like a marking bug.
+     * The gfx demo leaves a blue background and a centred box; this loop draws
+     * a bar on black. Painting it here means g_model, g_sent and the panel all
+     * agree before the safety net comes down - and with resync off, any
+     * disagreement would sit on the glass for twenty seconds looking exactly
+     * like a marking bug.
      */
-    elide_reset();
+    (void)gfx_solid(0u, SH8601_HEIGHT - 1u, BLACKCOL);
+    (void)gfx_solid((uint16_t)g_bar_y, (uint16_t)(g_bar_y + BAR_H - 1), BARCOL);
+    (void)gfx_present();
     {
     uint32_t period = CPU_HZ / 60u;      /* cycles in one 60 Hz frame */
     uint32_t next   = cpu_cycles();
@@ -260,16 +265,20 @@ void app_entry(void)
         const elide_stats *e;
         uint32_t fps10, budget10;
 
-        /* Erase where it IS, draw where it will be.
+        /*
+         * DRIVEN THROUGH gfx, NOT RAW elide.
          *
-         * The previous version marked g_bar_prev, which held the position from
-         * TWO frames ago. It only worked by accident: with a 4px step and a
-         * 96px bar, consecutive positions overlap so heavily that the union
-         * covered the gap anyway. At the wrap the positions stop being
-         * adjacent, the cover fails, and red is left behind permanently.
+         * This loop is the strongest verification in the project - 20 s with
+         * the resync safety net down, every wrap traced - and it used to call
+         * elide_mark() and scene() directly, so it tested elide's marking and
+         * nothing above it. gfx's second model, g_sent, is what the panel is
+         * believed to hold; if that ever drifts from reality the symptom is
+         * exactly what this loop exists to catch, and it was the one layer the
+         * loop did not touch.
          *
-         * Resync hid this completely - every 120 frames scrubbed the evidence.
-         * It only became visible with the safety net switched off. */
+         * Describing the scene rather than marking it also removes the last
+         * hand-marking from the demo. There is nothing left here to get wrong.
+         */
         {
             /* First STATIONARY_FRAMES (3s at 60Hz): bar STATIONARY. If the screen
              * shows one clean bar on black, the window/write path is correct
@@ -285,17 +294,20 @@ void app_entry(void)
              * rather than hoping the every-60-frames telemetry lands on one:
              * the bar wraps every 88 frames, so it mostly does not. */
             wrapped = (new_y < old_y);
-            elide_mark(old_y, old_y + BAR_H - 1);   /* erase */
-            elide_mark(new_y, new_y + BAR_H - 1);   /* draw  */
+            if (new_y != old_y)
+                (void)gfx_solid((uint16_t)old_y,
+                                (uint16_t)(old_y + BAR_H - 1), BLACKCOL);
+            (void)gfx_solid((uint16_t)new_y,
+                            (uint16_t)(new_y + BAR_H - 1), BARCOL);
             g_bar_y = new_y;
         }
 
-        rc = elide_flush(scene);
+        rc = gfx_present();
         if (rc != SPI2_OK) {
             con_puts("  flush FAILED rc="); con_dec((int32_t)rc);
             con_puts(" (-5 sync -6 usr -7 dma)  gdma_raw=");
             con_hex32(gdma_last_status()); con_puts("\r\n");
-            elide_reset(); delay_ms(500u); continue;
+            gfx_invalidate(); delay_ms(500u); continue;
         }
         e = elide_last();
 
@@ -317,6 +329,11 @@ void app_entry(void)
             con_puts("  WRAP f=");   con_dec((int32_t)f);
             con_puts(" rows=");      con_dec((int32_t)e->rows_sent);
             con_puts(" spans=");     con_dec((int32_t)e->spans);
+            /* At the wrap old and new do not overlap, so BOTH bands are net
+             * changes: 96 erased plus 96 drawn. Between wraps only the 4 rows
+             * vacated and the 4 newly covered differ from what the panel holds,
+             * which is what present-time diffing buys - the steady state fell
+             * from 100 rows to 8. */
             con_puts(" expect rows=192 spans=2");
             con_puts(net_off ? "  [resync OFF]\r\n" : "  [resync on]\r\n");
         }
