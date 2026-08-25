@@ -2,13 +2,30 @@
 # Zero-dependency build: compiler + linker + image packer. No ESP-IDF build system.
 set -e
 M="$(cd "$(dirname "$0")" && pwd)"
-TC=$(ls -d /home/ztflynn/.espressif/tools/xtensa-esp-elf/*/xtensa-esp-elf/bin | head -1)
+
+# Toolchain selection is DETERMINISTIC and REPORTED.
+#
+# This used to be `ls -d ... | head -1`, which sorts lexically and therefore
+# picked esp-13.2.0 out of three installed toolchains - silently building with
+# the oldest compiler on the machine while the project claimed a reproducible
+# zero-dependency build. Newest by version sort, overridable, and printed so
+# the log records which compiler produced the image.
+TC="${METAL99_TOOLCHAIN:-$(ls -d "$HOME"/.espressif/tools/xtensa-esp-elf/*/xtensa-esp-elf/bin 2>/dev/null | sort -V | tail -1)}"
+[ -n "$TC" ] && [ -x "$TC/xtensa-esp32s3-elf-gcc" ] || {
+  echo "no xtensa-esp-elf toolchain found under ~/.espressif/tools/" >&2
+  echo "set METAL99_TOOLCHAIN=/path/to/xtensa-esp-elf/bin to override" >&2
+  exit 1
+}
 CC="$TC/xtensa-esp32s3-elf-gcc"
 OBJCOPY="$TC/xtensa-esp32s3-elf-objcopy"
 SIZE="$TC/xtensa-esp32s3-elf-size"
+echo "toolchain: $($CC -dumpversion)  ($TC)"
 
 GCCINC=$($CC -print-file-name=include)
-CFLAGS="-std=c99 -pedantic-errors -Wall -Wextra -Werror -Os -mlongcalls
+# -Wshadow is load-bearing, not tidiness. A shadowed `fails` in selftest.c made
+# selftest_transport() return 0 unconditionally - a self-test that could not
+# report a failure, which is the exact defect the self-test exists to prevent.
+CFLAGS="-std=c99 -pedantic-errors -Wall -Wextra -Wshadow -Werror -Os -mlongcalls
         -ffreestanding -mtext-section-literals -ffunction-sections -fdata-sections -fno-builtin
         -nostdinc -isystem $GCCINC -I$M/src"
 LDFLAGS="-nostdlib -Wl,--gc-sections -Wl,-T,$M/link.ld -Wl,-Map,$M/build/fw.map"
