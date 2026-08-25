@@ -59,4 +59,8 @@ void vg_set_bg(uint16_t colour);
  * picture, so it is counted rather than ignored. */
 uint32_t vg_overflow(void);
 
+/* Segments submitted this frame. Worth watching: a scene that creeps up on
+ * VG_MAX_SEGS starts losing lines quietly, and the picture just gets thinner. */
+int vg_count(void);
+
 #endif /* VG_H */

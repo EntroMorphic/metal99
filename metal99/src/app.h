@@ -29,13 +29,34 @@
 typedef struct {
     const char *name;
 
+    /*
+     * Target cadence in Hz. main.c paces to this.
+     *
+     * An interface elides and runs at 60 with 26x headroom. A vector scene
+     * repaints the whole screen every frame - 31.2 ms of wire time at 40 MHz
+     * (DESIGN.md 5) - so it cannot, and pacing it to 60 only produces a late
+     * counter that climbs forever and tells nobody anything. Declaring the
+     * real cadence makes "late" mean what it says again.
+     */
+    uint16_t hz;
+
     /* Once, after gfx_init(). Draw anything that does not change here. */
     void (*init)(void);
 
-    /* Once per frame, before gfx_present(). `f` counts frames since start.
-     * DESCRIBE the whole scene: gfx diffs it against what the panel holds, so
-     * redescribing something unchanged costs nothing (DESIGN.md 5.2). */
-    void (*frame)(uint32_t f);
+    /*
+     * Once per frame. `f` counts frames since start. Returns 0 on success.
+     *
+     * THE APP PRESENTS. It used to just describe a scene and main.c called
+     * gfx_present(), which quietly assumed every app draws through the
+     * retained run model. A vector app does not: it streams rows straight to
+     * the panel (vg.h), because eight runs per row and a diff against what the
+     * panel holds are the wrong tools for a scene where everything moves.
+     *
+     * An interface app calls gfx_* and returns gfx_present(). A vector app
+     * calls vg_* and returns sh8601_write_frame(vg_rowfn). main.c paces and
+     * measures; what reaches the glass is the app's business.
+     */
+    int (*frame)(uint32_t f);
 
     /* For each input event, before frame(). May be NULL. */
     void (*event)(const ui_event *e);

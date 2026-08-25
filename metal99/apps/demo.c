@@ -10,6 +10,7 @@
 #include "gfx.h"
 #include "font.h"
 #include "sh8601.h"
+#include "spi2.h"
 
 #define BAR_H      96
 #define BAR_TRAVEL (SH8601_HEIGHT - BAR_H)
@@ -91,7 +92,7 @@ static void demo_event(const ui_event *e)
     }
 }
 
-static void demo_frame(uint32_t f)
+static int demo_frame(uint32_t f)
 {
     char b[16];
 
@@ -114,6 +115,8 @@ static void demo_frame(uint32_t f)
     b[0] = 'T'; b[1] = 'A'; b[2] = 'P'; b[3] = 'S'; b[4] = ':';
     u32str(b + 5, (uint32_t)g_taps, 3);
     (void)gfx_text(3, 16u, 400u, b, TOUCHCOL, &share_mono_16x32);
+
+    return gfx_present();
 }
 
-const app_t APP = { "demo", demo_init, demo_frame, demo_event };
+const app_t APP = { "demo", 60u, demo_init, demo_frame, demo_event };

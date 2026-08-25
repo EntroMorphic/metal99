@@ -127,7 +127,7 @@ static void verify_marking(void)
 void app_entry(void)
 {
     int rc, trc;
-    uint32_t f, late = 0u, period, next;
+    uint32_t f, late = 0u, period, next, worst = 0u;
 
     con_puts("\r\n=== metal99 ===\r\n");
     /* NOT ignorable: g_cpu_hz only updates on success, so a silent failure
@@ -173,24 +173,28 @@ void app_entry(void)
     verify_marking();
 
     /* ---- hand off ---- */
-    con_puts("\r\napp: "); con_puts(APP.name); con_puts("\r\n");
+    con_puts("\r\napp: "); con_puts(APP.name);
+    con_puts(" @ "); con_dec((int32_t)(APP.hz ? APP.hz : 60u)); con_puts(" Hz\r\n");
     gfx_init();
     ui_init();
     if (APP.init) APP.init();
 
-    period = CPU_HZ / 60u;
+    period = CPU_HZ / (APP.hz ? APP.hz : 60u);
     next   = cpu_cycles();
     for (f = 0u; ; f++) {
-        const elide_stats *e;
+        uint32_t t0 = cpu_cycles(), spent;
 
         if (trc == TOUCH_OK) ui_poll(APP.event);
-        if (APP.frame) APP.frame(f);
-        rc = gfx_present();
+        rc = APP.frame ? APP.frame(f) : 0;
         if (rc != SPI2_OK) {
-            con_puts("  present FAILED rc="); con_dec((int32_t)rc); con_puts("\r\n");
+            con_puts("  frame FAILED rc="); con_dec((int32_t)rc); con_puts("\r\n");
             gfx_invalidate(); delay_ms(500u); continue;
         }
-        e = elide_last();
+        /* Measured here rather than read from elide: an app that streams rows
+         * straight to the panel never touches elide, and reporting its stale
+         * numbers would be worse than reporting none. */
+        spent = cpu_cycles() - t0;
+        if (spent > worst) worst = spent;
 
         if ((cpu_cycles() - next) < period) {
             while ((cpu_cycles() - next) < period) { }
@@ -203,12 +207,11 @@ void app_entry(void)
         }
 
         if ((f % 300u) == 0u) {
-            con_puts("elide | "); con_dec((int32_t)e->rows_sent);
-            con_puts(" rows ");   con_dec((int32_t)e->spans);
-            con_puts(" spans | "); put_ms(e->cycles);
-            con_puts("| px=");    con_dec((int32_t)e->px_sent);
-            con_puts(" late=");   con_dec((int32_t)late);
+            con_puts("frame "); put_ms(spent);
+            con_puts("| worst "); put_ms(worst);
+            con_puts("| late="); con_dec((int32_t)late);
             con_puts("\r\n");
+            worst = 0u;
         }
     }
 }

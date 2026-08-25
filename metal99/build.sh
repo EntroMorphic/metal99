@@ -30,8 +30,17 @@ CFLAGS="-std=c99 -pedantic-errors -Wall -Wextra -Wshadow -Werror -Os -mlongcalls
         -nostdinc -isystem $GCCINC -I$M/src"
 LDFLAGS="-nostdlib -Wl,--gc-sections -Wl,-T,$M/link.ld -Wl,-Map,$M/build/fw.map"
 
+# ONE app is linked, chosen here. Every app defines `const app_t APP`, so they
+# cannot all be compiled at once - and that is the point of the boundary: an
+# application is a file you swap, not a branch inside main.c.
+APP="${APP:-gridvoid}"
+[ -f "$M/apps/$APP.c" ] || { echo "no such app: $M/apps/$APP.c" >&2
+                             echo "available: $(ls "$M"/apps/*.c | xargs -n1 basename | sed 's/\.c$//' | tr '\n' ' ')" >&2
+                             exit 1; }
+echo "app: $APP"
+
 mkdir -p "$M/build"
-$CC $CFLAGS $LDFLAGS "$M"/src/*.c -o "$M/build/fw.elf" -lgcc
+$CC $CFLAGS -I"$M/apps" $LDFLAGS "$M"/src/*.c "$M/apps/$APP.c" -o "$M/build/fw.elf" -lgcc
 $SIZE "$M/build/fw.elf"
 esptool --chip esp32s3 elf2image --flash-mode dio --flash-freq 80m \
         --flash-size 16MB --output "$M/build/fw.bin" "$M/build/fw.elf" >/dev/null

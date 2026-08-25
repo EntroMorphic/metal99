@@ -25,6 +25,7 @@ static uint32_t g_over;
 
 void vg_set_bg(uint16_t colour) { g_bg = colour; }
 uint32_t vg_overflow(void)      { return g_over; }
+int      vg_count(void)         { return g_nseg; }
 
 void vg_begin(void)
 {
@@ -89,6 +90,15 @@ void vg_finish(void)
 void vg_rowfn(uint16_t *row, int y)
 {
     int16_t i, prev;
+
+    /*
+     * BOUNDS FIRST. y indexes g_bucket, and it arrives from whoever is driving
+     * the transport - sh8601_write_frame today, a span walk tomorrow. The
+     * header asks for rows in range and in order; asking is not enforcing, and
+     * an out-of-range read here is a rasteriser indexing an array with a number
+     * it did not choose.
+     */
+    if (y < 0 || y >= H) return;
 
     /* Background first. Vector scenes are mostly unlit, so this is the bulk of
      * the work and it goes through the vector unit like every other fill. */
