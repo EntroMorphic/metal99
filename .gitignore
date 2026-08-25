@@ -30,4 +30,5 @@ tmp/
 # build logs: kept in-repo (never /tmp, which the OS evicts) but not tracked
 logs/
 tests/host/host_render
+tests/host/digest_test
 tests/host/*.ppm
