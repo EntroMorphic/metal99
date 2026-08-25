@@ -221,10 +221,28 @@ void spi2_init(void)
 
 void spi2_flush_afifo(void)
 {
-    /* Pulse the buffer AFIFO reset, then clear. DMA_TX_ENA stays off: this is
-     * the FIFO path, and touching that bit would switch the data path. */
+    /*
+     * Pulse the buffer AFIFO reset, then clear. DMA_TX_ENA stays off: this is
+     * the FIFO path, and touching that bit would switch the data path.
+     *
+     * THE READ-BACKS ARE THE POINT, not defensive habit. Two consecutive
+     * stores to this register are posted writes leaving the core back to back,
+     * so the reset was asserted for roughly one APB cycle - about 12.5 ns at
+     * 80 MHz APB. The AFIFO being reset is in the SPI clock domain, whose
+     * period is 25 ns at a 40 MHz bus. A pulse narrower than the clock edge
+     * meant to sample it is a pulse that can be missed entirely, and missing
+     * it looks exactly like not calling this function at all - which is what
+     * the panel has been showing.
+     *
+     * Reading the register back forces the posted write to complete before the
+     * next store issues, so the assertion is at least one full bus round trip
+     * wide. IDF never hit this because their bitfield write is a
+     * read-modify-write, which widens the pulse by accident.
+     */
     SPI_DMA_CONF = SPI_BUF_AFIFO_RST_BIT;
+    (void)SPI_DMA_CONF;
     SPI_DMA_CONF = 0u;
+    (void)SPI_DMA_CONF;
 }
 
 /* ------------------------------------------------------------- transfer */

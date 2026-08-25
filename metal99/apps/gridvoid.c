@@ -388,7 +388,7 @@ static int game_frame(uint32_t f)
      * clustered - and this line is the one to change back the day the leak is
      * understood. Artifacts are worse than 21% of the rows.
      */
-    return sh8601_write_frame(vg_rowfn);
+    return vg_present();
 }
 
 /*
@@ -422,4 +422,4 @@ static int game_frame(uint32_t f)
  * setups. 3.1 spans per frame with it and without; worst frame unchanged. It
  * was removed rather than kept as a plausible story with no effect.
  */
-const app_t APP = { "gridvoid", 40u, game_init, game_frame, game_event };
+const app_t APP = { "gridvoid", 36u, game_init, game_frame, game_event };
