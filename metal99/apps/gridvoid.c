@@ -362,24 +362,30 @@ static int game_frame(uint32_t f)
     return sh8601_write_frame(vg_rowfn);
 }
 
-/* 30 Hz: a full-screen vector frame is 31.2 ms of wire time, so 60 is not
- * available and pretending otherwise just makes the late counter noise.
+/*
+ * 40 Hz. A full repaint is 22.2 ms of panel time at 80 MHz - it was 31.2 ms at
+ * 40 MHz, which is where the old 30 Hz came from.
  *
- * KNOWN, MEASURED, NOT YET FIXED: craft shimmer slightly while the grid sits
- * perfectly still. That asymmetry is the whole diagnosis - it is not the
- * renderer. A 4000-frame probe found zero dropouts, zero segment overflow, and
- * craft() varies smoothly across all 256 spin angles at every depth (no abrupt
- * step at any angle, trig table exact to 0.003%). What we have is 31.2 ms of
- * writing inside a 33.2 ms frame: a 94% duty cycle with essentially no gap, so
- * the panel scans out rows we are still updating. Static pixels are rewritten
- * identically and show nothing; a moving craft is at the old position in one
- * row and the new one a few rows down, which on a thin wireframe reads as
- * blinking.
+ * THE MARGIN IS THIN AND THAT IS DELIBERATE: 24.7 ms worst frame against a
+ * 25 ms budget, held over a 75 s soak with foes spawning and dying, late=0.
+ * About 1%. The cost is dominated by the full repaint, which is constant, so
+ * it is deterministic rather than lucky - but a scene that adds work will
+ * spend that 1% immediately and start reporting late. If you make this app
+ * busier, re-measure before assuming 40 still fits.
  *
- * Three fixes, in order of honesty about effort. Skipping rows that are unlit
- * this frame AND were unlit last frame cuts wire time hard on a mostly-black
- * scene and buys real margin. 80 MHz halves it outright, if the SH8601 accepts
- * it. The correct fix is TE: 0x35 is already enabled in sh8601_init, the panel
- * is already pulsing the line, and we simply never wired the pin - see
- * docs/lmm/framerate_raw.md. */
-const app_t APP = { "gridvoid", 30u, game_init, game_frame, game_event };
+ * Doubling the bus clock bought 1.41x, not 2x, which says the frame is no
+ * longer purely wire-bound: ~18 us/row goes on the wire and ~29 us goes on
+ * per-row command overhead and rendering inside vg_rowfn. The next real win is
+ * therefore skipping rows that are unlit this frame AND were unlit last frame,
+ * which saves BOTH costs on roughly the top quarter of a vector scene - enough
+ * to put a repaint under one refresh period. That is also what would finally
+ * fix the shimmer, since it is the only phase control available: see below.
+ *
+ * NO TE ON THIS BOARD - measured, not assumed. Waveshare's BSP defines no TE
+ * pin and neither does their Arduino pin_config.h, and a scan of every free
+ * pad (apps/tescan.c, with a self-test that drives a known 60 Hz square wave
+ * and requires the scanner to read it back) found all of them floating. The
+ * panel is pulsing TE - sh8601_init sends 0x35 - but the line goes nowhere we
+ * can reach. So we cannot lock to the panel's phase; we can only outrun it.
+ */
+const app_t APP = { "gridvoid", 40u, game_init, game_frame, game_event };

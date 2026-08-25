@@ -22,6 +22,9 @@
 #include "ui.h"
 #include "app.h"
 
+/* One knob, one place. 80 needs the PLL (APB is 20 MHz without it). */
+#define SPI_MHZ 80u
+
 #define ROW_VECTORS (SH8601_WIDTH * 2 / VEC_BYTES)
 #define BLACKCOL    sh8601_rgb565(0, 0, 0)
 #define BARCOL      sh8601_rgb565(255, 60, 0)
@@ -138,7 +141,23 @@ void app_entry(void)
                         con_puts(" - staying at 20 MHz\r\n"); }
     spi2_init();
     gdma_init();
-    (void)spi2_set_clock(40u);
+    /*
+     * BUS CLOCK. 40 was the vendor BSP's choice and we inherited it without
+     * testing the alternative.
+     *
+     * It is not just throughput. At 40 MHz a full vector repaint is 31.2 ms
+     * against the panel's ~16.7 ms refresh, so the scanout laps our write and
+     * crosses it repeatedly - which is what makes moving wireframes shimmer
+     * while static ones sit perfectly still. At 80 the write is ~15.6 ms,
+     * under one refresh period, so we cross the beam once per frame instead of
+     * being overtaken by it. Without a TE line (this board does not route one -
+     * see apps/tescan.c) outrunning the scanout is the only phase control we
+     * have.
+     *
+     * The failure mode is visible and harmless: a panel that cannot keep up
+     * shows corruption immediately. Drop to 40 if it does.
+     */
+    (void)spi2_set_clock(SPI_MHZ);
     rc = sh8601_init();
     con_puts("sh8601_init rc="); con_dec((int32_t)rc); con_puts("\r\n");
 
