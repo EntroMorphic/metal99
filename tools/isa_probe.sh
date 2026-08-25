@@ -9,7 +9,10 @@
 #   ./tools/isa_probe.sh "ee.vadds.s16 q0, q1, q2"   probe one instruction
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TC=$(ls -d "$HOME"/.espressif/tools/xtensa-esp-elf/*/xtensa-esp-elf/bin | head -1)
+# Newest toolchain, not lexically-first: which mnemonics assemble depends on the
+# assembler version, so probing with an older gas silently under-reports the ISA.
+# Same defect build.sh had.
+TC="${METAL99_TOOLCHAIN:-$(ls -d "$HOME"/.espressif/tools/xtensa-esp-elf/*/xtensa-esp-elf/bin | sort -V | tail -1)}"
 CC="$TC/xtensa-esp32s3-elf-gcc"
 INC=$("$CC" -print-file-name=include)
 TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
