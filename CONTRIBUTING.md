@@ -5,7 +5,14 @@ Two rules are non-negotiable, and both shape everything else.
 ## 1. Pure ISO C99
 
 Every source file compiles under `-std=c99 -pedantic-errors -Wall -Wextra
--Werror`. The build enforces it; there is no opt-out.
+-Wshadow -Werror`. The build enforces it; there is no opt-out.
+
+`-Wshadow` is load-bearing, not tidiness. A shadowed `fails` counter inside
+`selftest_transport()` meant every `fails++` hit an inner variable while
+`return fails` handed back an outer one that nothing ever touched — the
+compiler folded the function to `movi.n a2, 0 ; retw.n`, so the self-test
+could not report a failure even while printing one, and `main.c` announced
+`SELF-TEST PASSED` for every build ever made.
 
 Practical consequences:
 
@@ -22,8 +29,17 @@ ESP-IDF headers cannot be included anywhere: they use `_Static_assert` and bare
 Bulk data work goes through the LX7 128-bit vector unit (`vec.h`). GCC does not
 auto-vectorise to `EE.*`, so these are inline `__asm__`.
 
-**Claim a vector register in `vec.h` before using one.** q0-q3 are taken; q4-q7
-are free. A collision shows up as intermittent visual corruption.
+**Claim a vector register in `vec.h` before using one.** The owners are the
+`VEC_Q_*` macros there, and the asm pastes those macros rather than naming a
+register directly — so the list cannot drift out of step with the code. All
+eight are currently claimed; a new owner must share one and show the two never
+interleave, because they are not saved or restored.
+
+This used to be a hand-maintained comment reading *"q0-q3 are taken; q4-q7 are
+free"*, repeated here. It stayed that way after `vec_ramp16` took q4/q5 and
+`vec_xor16` took q6/q7, so both documents were actively directing contributors
+onto occupied registers — the exact intermittent corruption the note existed to
+prevent.
 
 The rule governs code that runs **on the device**. Host harnesses
 (`tests/host/vec_host.c`) and the self-test digest are deliberately scalar —
@@ -38,11 +54,15 @@ row, a self-test that computed zero for every even input.
 
 Before claiming a change works:
 
-1. `./tools/flash.sh -c 20` and read the self-test result
-2. If you touched a transport, confirm the **fault injection** still reports
+1. `make -C tests/host test` — digest assertions, no board required. These
+   link `metal99/src/fold.c` directly, so they exercise the firmware's own
+   instrument rather than a host copy of it.
+2. `./tools/flash.sh -c 20` and read the self-test result
+3. If you touched a transport, confirm the **fault injection** still reports
    `DETECTED` — a verifier that always passes is worthless
-3. If the change is visual, look at the panel; the ledger checks what was
-   *sent*, not what was *displayed*
+4. If the change is visual, look at the panel. The ledger checks what was
+   *sent*, not what was *displayed*, and that gap is not academic: banded DMA
+   passes the ledger and still looks wrong.
 
 ## Instruments belong in the repo
 

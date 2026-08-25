@@ -243,7 +243,7 @@ Total internal SRAM: **512 KB**. Our linker regions claim 320 KB of it.
 | Consumer | Size | Notes |
 |---|---|---|
 | Code (`.text`) | ~8–16 K est. | Milestone 1 was 879 B |
-| Band staging buffer | 46 K | 64 rows x 368 x 2 B |
+| Band staging buffer | 46 K | 2 buffers x 32 rows x 368 x 2 B (double-buffered) |
 | Messaging layer (embedded profile, §7.4) | 34 K | vs 1920 K at desktop defaults |
 | Stack | 8 K | |
 | **Subtotal** | **~104 K** | Comfortable inside 320 K |
@@ -626,8 +626,13 @@ everything displayed was produced by our own code starting from nothing.
 | Address window, RGB565 big-endian pixels | verified visually |
 | Row-streamed frames, no framebuffer in RAM | verified |
 
-2,240-byte image. Pure ISO C99 under `-pedantic-errors -Wall -Wextra -Werror`.
-No ESP-IDF, no FreeRTOS, no libc, no ROM calls.
+2,240-byte image **at this milestone**. Pure ISO C99 under `-pedantic-errors
+-Wall -Wextra -Werror`. No ESP-IDF, no FreeRTOS, no libc, no ROM calls.
+
+> Historical figure, kept as the record of what Milestone 2 shipped. The
+> current image is 8,528 bytes — elision, `gfx`, GDMA and the self-test all landed
+> after this. `build.sh` prints the size on every build; README carried the
+> 2,240 figure forward unchanged for months, which is why this one is dated.
 
 **What remains is performance, and both levers are measured and independent:**
 
@@ -781,6 +786,27 @@ frame*. Measured against real updates, cost per row is dead linear at
 And that last 10% is now **closed** (see 6.6j): banding plus render/DMA overlap
 took a full frame from 18.30 ms to **16.60 ms**, so **every one of the 448 rows
 can be updated at 60 Hz**.
+
+> **CORRECTION (2026-08-24, after banded DMA was parked).** The paragraph above
+> is true *of banded DMA*, and banded DMA is disabled (6.6l). It was written
+> before that decision and reads as an unqualified claim, which is how README's
+> "All 448 rows are updatable at 60 Hz" came to describe a transport that does
+> not ship.
+>
+> Measured directly on the **FIFO** transport that does ship, one timed
+> 448-row repaint at 160 MHz CPU / 40 MHz QSPI:
+>
+> | | |
+> |---|---|
+> | total | **31.2 ms** — **31.9 fps** |
+> | flush | 30.3 ms (0.068 ms/row) |
+> | render | 0.8 ms (0.002 ms/row) |
+> | 60 Hz boundary | **~240 rows**, not 408 and not 448 |
+>
+> Still linear, still 2.2x headroom on a 104-row interface update, and still
+> zero late frames in steady state. But a literal full repaint at 60 Hz needs
+> the parked transport. The honest statement is: **60 Hz is achieved for
+> interface-sized updates; full-frame 60 Hz is not achieved by what ships.**
 
 So the honest statement is: **60 Hz is achieved.** The original claim confused
 "full-frame refresh at 60 fps" with "60 fps", and only the former was ever in
@@ -996,7 +1022,7 @@ set `SPI_CMD.USR`; poll `SPI_CMD.USR` until clear; repeat.
 
 ---
 
-## 6.8 PROJECT RULE: no scalar per-element math
+## 6.9 PROJECT RULE: no scalar per-element math
 
 **Non-negotiable.** All bulk data work goes through the LX7's 128-bit vector
 unit. No scalar loops over pixels or bytes.
@@ -1063,7 +1089,7 @@ panel renders from vectorised fills.
 | `con_dec` | console formatting |
 | Loop counters, addresses, branches | inherent control flow |
 
-### 6.8a Vectorised MMIO - both blockers dissolved
+### 6.9a Vectorised MMIO - both blockers dissolved
 
 I had written off vectorising the FIFO load. Both reasons turned out to be
 wrong, and testing them cost under an hour.
