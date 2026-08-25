@@ -35,3 +35,14 @@ tests/host/gfx_test
 tests/host/gfx_png
 tests/host/*.ppm
 tests/host/*.png
+tests/host/ui_test
+tests/host/vg_test
+tests/host/game_test
+tests/host/game_png
+
+# ---- device flash dumps: NOT redistributable, NOT small ----
+# A full 16MB stock dump is 16MB of Espressif managed components and Waveshare's
+# factory app in compiled form. It was tracked once; the history was rewritten to
+# drop it. Keep your own copy here to restore the board - it stays out of git.
+#   esptool --chip esp32s3 -b 921600 read_flash 0 0x1000000 backup/stock-full-16MB.bin
+backup/
