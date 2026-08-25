@@ -219,6 +219,14 @@ void spi2_init(void)
     (void)spi2_sync();
 }
 
+void spi2_flush_afifo(void)
+{
+    /* Pulse the buffer AFIFO reset, then clear. DMA_TX_ENA stays off: this is
+     * the FIFO path, and touching that bit would switch the data path. */
+    SPI_DMA_CONF = SPI_BUF_AFIFO_RST_BIT;
+    SPI_DMA_CONF = 0u;
+}
+
 /* ------------------------------------------------------------- transfer */
 int spi2_xfer(const uint8_t *data, uint32_t len, int quad, int keep_cs)
 {

@@ -114,6 +114,8 @@ correct because something kept fixing it.
 | Elision + 60 Hz pacing | **shipping** — 60 Hz locked, 2.2x headroom, zero late frames |
 | Self-checking harness | validated against injected faults, on device and on host |
 | `gfx` retained-mode layer | **shipping** — dirtiness derived, redundant repaints cost 0 rows |
+| Text, TTF-derived bitmap fonts | **shipping** — static text costs 0 px |
+| Touch, FT3168 over I2C | **shipping** — two contacts, tracking ids, INT-gated |
 | Banded GDMA | parked — data proven identical, timing suspect |
 
 ## Quickstart
@@ -163,6 +165,8 @@ To restore the stock Waveshare firmware, see [`backup/RESTORE.md`](backup/RESTOR
 | `elide.c` | dirty-row tracking, span coalescing, rolling resync |
 | `gfx.c` | retained-mode layer — dirtiness derived, not declared; runs, rects and text labels |
 | `font.h` `font_share.c` | 1bpp bitmap fonts, rasterised from TTF at build time |
+| `i2c.c` | I2C0 master from registers, bus recovery, scan |
+| `touch.c` | FT3168 capacitive touch, two contacts |
 | `selftest.c` | on-device verification + fault injection |
 
 ## How it got here
@@ -198,6 +202,13 @@ Other findings, all measured rather than assumed:
 - **The panel keeps its framebuffer** across CPU resets *and* software reset.
   That produced three "ghost image" misdiagnoses — and is exactly why elision
   works.
+- **Touch is FT3168 at 0x38**, I2C on GPIO14/15, INT active-low on GPIO21, and
+  **no reset line** — same as the panel. The V2 board has a CST816 at the same
+  address, so the driver checks the vendor ID rather than assuming.
+- **Debris at span boundaries is real and unexplained.** More spans per frame
+  means more of it, so a changed text label marks full rows to keep them
+  coalesced with their neighbours. See [`docs/DESIGN.md`](docs/DESIGN.md) §11.4
+  — the workaround is documented in `gfx.c`, and the cause is still open.
 
 ## Contributing
 

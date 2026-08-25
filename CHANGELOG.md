@@ -124,6 +124,41 @@ one continuous run.
   which is part of how the constant-zero return went unnoticed. It now prints
   the return value, so the two disagreeing would be visible.
 
+### Added — touch
+- **I2C0 master from registers** (`i2c.c`): 400 kHz, bus-recovery clock
+  sequence, full-configuration recovery after a NACK, and an address scan kept
+  as a diagnostic. Bring-up cost four bugs and every one was the same mistake —
+  writing a bare literal into a register whose reset value carries meaning, or
+  trusting a remembered field instead of looking it up. `GPIO_SIG_IN_SEL`,
+  `I2C_SCLK_ACTIVE`, `FIFO_PRT_EN`, and an `sda_sample` that violated the
+  hardware's own stated timing assumption. See DESIGN.md §11.2.
+- **FT3168 touch** (`touch.c`): two contacts with tracking ids, vendor-ID
+  checked rather than assumed (the V2 board's CST816 shares address 0x38),
+  INT-gated so an idle screen costs a GPIO read instead of a 150 µs
+  transaction, and a bounded retry because the controller has no reset line and
+  comes up on its own schedule.
+- `capture.py` no longer falls back to a bare `/dev/ttyACM*` glob. During a
+  transient re-enumeration it returned this machine's NVIDIA Tegra debug port,
+  and every read after that was addressed to unrelated hardware — which looked
+  exactly like the board having died.
+
+### Known issue — span-boundary debris
+- Text over a moving background leaves debris while the text is **changing**;
+  static text over the same background is perfect. Eliminated with evidence:
+  lost flushes, phantom contacts, sub-width transmission, multi-span frames,
+  marking logic, and the panel ignoring partial column windows — an on-glass
+  band test proved it honours them. The hidden variable is **span count**, not
+  width: `elide` coalesces only rows with identical extents, so a narrow mark
+  among full-width ones splits one span into four.
+- `spi2_flush_afifo()` drains the output AFIFO at the start of each span. The
+  DMA path always did this and the FIFO path never did — a real defect, now
+  fixed. **It did not resolve the artifact.**
+- Workaround: a changed label marks full rows. 1.8× on text updates only;
+  rectangles still mark sub-width. Documented in `gfx.c` as a workaround, not a
+  fix. Residual: a thin line survives one pass. **The cause is still open**, and
+  what it needs is an on-device check that can see span-boundary debris without
+  a human looking at the screen.
+
 ### Added — text
 - **Labels are described, not rasterised.** A glyph scanline is up to five runs,
   so a twenty-character line would be a hundred runs in a row that holds eight —

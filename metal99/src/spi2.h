@@ -91,6 +91,25 @@ uint32_t spi2_ledger_digest(void);
 void spi2_init(void);
 
 /*
+ * Drain the output AFIFO. Call with CS IDLE, before starting a new stream.
+ *
+ * There is a small asynchronous FIFO between SPI_W0..W15 and the wire, and it
+ * does not necessarily come up empty for the next transaction. spi2_dma_start()
+ * has always reset it - IDF's spi_hal_hw_prepare_tx() does the same - but the
+ * FIFO path, the one that actually ships, never did.
+ *
+ * The symptom is leakage across a span boundary: the first pixels of a span
+ * carry bytes belonging to the previous one. On a static three-band test that
+ * showed as orange bleeding into the top rows of the next band, and a stray
+ * fragment of one band's colour appearing inside another. In motion it reads
+ * as debris, and it gets worse the more spans a frame contains - which is why
+ * it tracked sub-width marking so closely: elide coalesces rows only when their
+ * extents match, so mixed extents split one span into several, and every extra
+ * boundary is another chance to leak.
+ */
+void spi2_flush_afifo(void);
+
+/*
  * One FIFO transaction. len must be 1..SPI2_FIFO_BYTES.
  *
  * ALIGNMENT CONTRACT: `data` MUST be 16-byte aligned (use VEC_ALIGN). The FIFO

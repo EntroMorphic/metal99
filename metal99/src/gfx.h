@@ -127,6 +127,17 @@ typedef char gfx_row_must_be_whole_vectors[
 #define GFX_MAX_LABELS  8
 #define GFX_LABEL_CHARS 40
 
+/*
+ * Rows of clear space kept BELOW a label's glyphs.
+ *
+ * The font cell is exactly as tall as its tallest glyph, so a label's box ends
+ * flush against the last row of ink. Text set immediately above other content
+ * reads as cramped, and anything that lands in the row just under the glyphs
+ * has nothing repainting it. These rows are part of the label's rectangle:
+ * they are cleared when it changes and repainted when it moves.
+ */
+#define GFX_LABEL_PAD_BOTTOM 5
+
 typedef struct {
     /*
      * rows_changed counts MODEL WRITES since the last present: a row set twice

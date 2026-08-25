@@ -75,6 +75,21 @@ static void fmt_point(char *b, const touch_point *p)
     u32str(b + 10, (uint32_t)p->y, 3);
 }
 
+/*
+ * DOES THE PANEL HONOUR A PARTIAL COLUMN WINDOW?
+ *
+ * The transmit ledger proves which BYTES reached the peripheral - exactly, for
+ * sub-width spans, on both transports. It says nothing about where the panel
+ * PUTS them, and that gap is the whole remaining suspect: full-width marking
+ * makes the artifact go away and sub-width brings it back, with every
+ * measurable layer in between reporting correct.
+ *
+ * So draw two bands of known geometry and look at the glass. Nothing else here
+ * can answer it.
+ */
+static uint16_t g_bandcol;
+static void solid_row(uint16_t *row, int y) { (void)y; vec_fill16(row, g_bandcol, ROW_VECTORS); }
+
 static void put_ms(uint32_t cycles)
 {
     uint32_t us = cycles / (CPU_HZ / 1000000u);
@@ -153,6 +168,35 @@ void app_entry(void)
         con_puts("  int="); con_hex32(i2c_dbg_int());
         con_puts(" sr="); con_hex32(i2c_dbg_sr());
         con_puts("\r\n");
+    }
+
+    /*
+     * WINDOW GEOMETRY, ON GLASS. Two seconds, every boot.
+     *
+     * The ledger proves which bytes reached the peripheral and is structurally
+     * blind to where the panel puts them - the same gap that let banded DMA
+     * pass every check while looking wrong (DESIGN.md 6.6l). This is the
+     * cheapest thing that can see it: three bands of known geometry, two of
+     * them deliberately narrow and on opposite edges.
+     *
+     * It earned its place. It is what showed that partial column windows ARE
+     * honoured - killing the leading theory - and then showed colour from one
+     * band leaking into the start of the next, which is what the bug actually
+     * was.
+     */
+    {
+        g_bandcol = BLACKCOL;
+        (void)sh8601_write_frame(solid_row);
+        g_bandcol = sh8601_rgb565(255, 60, 0);
+        (void)sh8601_write_span_x(0u, 120u, (uint16_t)(SH8601_WIDTH - 1), 159u,
+                                  solid_row);
+        g_bandcol = sh8601_rgb565(0, 220, 120);
+        (void)sh8601_write_span_x(0u, 220u, 63u, 259u, solid_row);
+        g_bandcol = sh8601_rgb565(80, 140, 255);
+        (void)sh8601_write_span_x(304u, 300u, 367u, 339u, solid_row);
+        con_puts("window check: orange full width, green left sixth,"
+                 " blue right sixth - edges should be clean\r\n");
+        delay_ms(2000u);
     }
 
     selftest_liveness();
@@ -379,6 +423,11 @@ void app_entry(void)
      * modular reporting. */
     uint32_t f;
     int net_off = 0, wrapped = 0;
+    /* CUMULATIVE, so a capture taken any time after a touch still carries the
+     * evidence. Instantaneous counters meant the console had to be watched at
+     * the exact moment a finger was down, which is not a workable way to
+     * diagnose something only a human can trigger. */
+    uint32_t fails = 0u, maxspans = 0u, lblframes = 0u, maxrows = 0u;
     char tbuf[16];
     touch_state ts;
     ts.n = 0u;
@@ -467,12 +516,16 @@ void app_entry(void)
 
         rc = gfx_present();
         if (rc != SPI2_OK) {
+            fails++;
             con_puts("  flush FAILED rc="); con_dec((int32_t)rc);
             con_puts(" (-5 sync -6 usr -7 dma)  gdma_raw=");
             con_hex32(gdma_last_status()); con_puts("\r\n");
             gfx_invalidate(); delay_ms(500u); continue;
         }
         e = elide_last();
+        if (e->spans > maxspans)        maxspans = e->spans;
+        if (e->rows_sent > maxrows)     maxrows  = e->rows_sent;
+        if (gfx_last()->labels_changed) lblframes++;
 
         /* Wait out the rest of the 60 Hz period. If we are already past it,
          * count it as a miss rather than silently drifting. */
@@ -533,6 +586,10 @@ void app_entry(void)
             con_puts("flush=");     put_ms(e->flush_cycles);
             con_puts(" px="); con_dec((int32_t)e->px_sent);
             con_puts(" lbl="); con_dec((int32_t)gfx_last()->labels_changed);
+            con_puts(" maxsp="); con_dec((int32_t)maxspans);
+            con_puts(" maxrows="); con_dec((int32_t)maxrows);
+            con_puts(" lblfr="); con_dec((int32_t)lblframes);
+            con_puts(" fails="); con_dec((int32_t)fails);
             con_puts(net_off ? " | resync=OFF\r\n" : " | resync=on\r\n");
         }
     }

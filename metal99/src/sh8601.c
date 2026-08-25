@@ -171,6 +171,10 @@ int sh8601_write_span_x(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1,
     full = (x0 == 0u) && (x1 == (uint16_t)(SH8601_WIDTH - 1));
     span_bytes = (uint32_t)(x1 - x0 + 1) * 2u;
 
+    /* Drain anything the previous span left in the output AFIFO before this one
+     * starts. CS is idle here, which is the only safe moment. See spi2.h. */
+    spi2_flush_afifo();
+
     rc = sh8601_set_window(x0, y0, x1, y1);
     if (rc != SPI2_OK) return rc;
 

@@ -322,10 +322,15 @@ int main(void)
         stub_reset();
         (void)gfx_text(0, 0, 100, "B", FG, F);
         (void)gfx_present();
-        check(marked(100, &a, &b) && a == 0 && b == 7,
-              "changed text marks only the label's columns");
-        check(!marked(99, &a, &b) && !marked(116, &a, &b),
-              "  and only its rows");
+        check(marked(100, &a, &b) && a == 0 && b == W - 1,
+              "changed text marks its full rows (see gfx.c: span-count workaround)");
+        /* Expressed via the constant rather than a literal, so the padding can
+         * change without silently making this assertion vacuous. */
+        check(!marked(99, &a, &b) &&
+              !marked(100 + (int)F->h + GFX_LABEL_PAD_BOTTOM, &a, &b),
+              "  and only its rows, plus the bottom padding");
+        check(marked(100 + (int)F->h + GFX_LABEL_PAD_BOTTOM - 1, &a, &b),
+              "  the padded rows below the glyphs belong to the label");
 
         /* Moving marks old and new. */
         gfx_solid(0, 447, BG); (void)gfx_present();
@@ -334,15 +339,15 @@ int main(void)
         stub_reset();
         (void)gfx_text(0, 64, 200, "Hi", FG, F);
         (void)gfx_present();
-        check(marked(205, &a, &b) && a == 0 && b == 79,
-              "a moved label marks the union of old and new");
+        check(marked(205, &a, &b) && a == 0 && b == W - 1,
+              "a moved label marks full rows at both positions");
 
         /* Clearing repaints the background where it was. */
         stub_reset();
         (void)gfx_text_clear(0);
         (void)gfx_present();
-        check(marked(205, &a, &b) && a == 64 && b == 79,
-              "clearing a label marks where it was");
+        check(marked(205, &a, &b) && a == 0 && b == W - 1,
+              "clearing a label marks the rows where it was");
         stub_render(205, g_row);
         check(g_row[64] == BG && g_row[70] == BG,
               "  and the row renders as pure background again");
@@ -351,8 +356,7 @@ int main(void)
         gfx_solid(0, 447, BG); (void)gfx_present();
         (void)gfx_text(1, 13, 300, "A", FG, F);
         (void)gfx_present();
-        check(marked(300, &a, &b) && a == 8,
-              "label x snaps down to the 8px grid");
+        check(marked(300, &a, &b), "a label's rows are marked when it changes");
 
         /* Clipped at the right edge rather than overrunning the row. */
         gfx_solid(0, 447, BG); (void)gfx_present();
@@ -391,19 +395,26 @@ int main(void)
             }
         }
 
-        for (frame = 0; frame < 120; frame++) {
-            int m;
+        /* EXACTLY main.c's paced scene: 96-row bar stepping 4 px, a static
+         * 12-char title at y=8, a 13-char label at y=56 whose contents change
+         * every frame, and slot 2 cleared - the shape that leaves a remnant on
+         * hardware. */
+        for (frame = 0; frame < 400; frame++) {
+            int m, k;
             bar = (bar + 4) % (SH8601_HEIGHT - 96);
-            /* whole scene, declaratively - the same as main.c */
             (void)gfx_solid(0, SH8601_HEIGHT - 1, BLACK);
             (void)gfx_solid((uint16_t)bar, (uint16_t)(bar + 95), ORANGE);
             (void)gfx_text(0, 16, 8, "metal99 60Hz", CYAN, &share_mono_16x32);
+            /* "<id> X:nnn Y:nnn", 13 chars, as fmt_point produces */
             lbl[0] = '0'; lbl[1] = ' '; lbl[2] = 'X'; lbl[3] = ':';
             lbl[4] = (char)('0' + (frame / 100) % 10);
             lbl[5] = (char)('0' + (frame / 10) % 10);
             lbl[6] = (char)('0' + frame % 10);
-            lbl[7] = '\0';
+            lbl[7] = ' '; lbl[8] = 'Y'; lbl[9] = ':';
+            for (k = 10; k < 13; k++) lbl[k] = (char)('0' + (frame + k) % 10);
+            lbl[13] = '\0';
             (void)gfx_text(1, 16, 56, lbl, CYAN, &share_mono_16x32);
+            gfx_text_clear(2);
 
             stub_reset();
             (void)gfx_present();

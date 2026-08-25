@@ -1615,6 +1615,131 @@ not constitute success.
 
 ---
 
+## 11. Touch input — FT3168 over I2C
+
+Added 2026-08-24. Numbered after the existing sections rather than inserted
+mid-document, so no cross-reference moves.
+
+### 11.1 Board facts
+
+| | |
+|---|---|
+| Controller | FocalTech **FT3168**, FT5x06 register protocol, address **0x38** |
+| I2C | SCL **GPIO14**, SDA **GPIO15**, 400 kHz from the 40 MHz XTAL |
+| INT | **GPIO21**, active LOW (the BSP declares `.interrupt = 0`) |
+| Reset | **not connected** - as with the panel, there is no reset line |
+| Orientation | `swap_xy`, `mirror_x`, `mirror_y` all 0; coordinates map directly, confirmed by touching corners |
+
+The V2 board carries a CST816/CST820 at the same address with a different
+register map, so `touch_init()` checks the vendor ID (0x11, FocalTech) rather
+than assuming. Reading a CST part's registers as if they were FocalTech's would
+produce plausible coordinates from nowhere.
+
+### 11.2 Four I2C bugs, one mistake
+
+Bring-up cost four rounds, and every one was the same error: **writing a bare
+literal into a register whose reset value carries meaning, or trusting a
+remembered field instead of looking it up.**
+
+| what | symptom |
+|---|---|
+| `GPIO_SIG_IN_SEL` (bit 7) not set on the input matrix | the controller never saw SDA, so it never saw an ACK. Bus looked empty. `spi2.c` does not need this because SPI2 only ever drives |
+| `I2C_SCLK_ACTIVE` (bit 21) not set - wrote `(0 << 20) \| 0` | no clock reached the state machine at all |
+| `I2C_FIFO_CONF = 0` cleared `FIFO_PRT_EN` (bit 14, resets to 1) | FIFO pointers froze after one byte; a 1-byte probe survived, the first real read did not |
+| `sda_sample` guessed as `half/8`; the formula is `half/2` | violated the hardware's own assumption `scl_wait_high < sda_sample < scl_high`. SDA sampled before data was valid, so a bus scan invented **seven devices** |
+
+The last one is worth dwelling on. IDF's `i2c_ll_master_cal_bus_freq` states that
+assertion in its own source, and at 400 kHz the three values are 23, 25 and 27 -
+**four cycles apart**. There is no room to improvise, and the failure is not a
+dead bus but a *plausible* one.
+
+### 11.3 Reliability, and what was not the problem
+
+Two more rounds went to intermittency, and both fixes were about not trusting a
+single attempt:
+
+- **`touch_init()` retries ten times, 20 ms apart.** With no reset line the
+  controller comes up on its own schedule, and one attempt turns "still waking"
+  into "absent". 200 ms against the ~350 ms `sh8601_init` that precedes it.
+- **`i2c_recover()` re-applies the FULL configuration**, not just `FSM_RST`. A
+  single NACK could otherwise leave the controller unable to complete anything,
+  so every subsequent retry failed for a reason unrelated to the device.
+
+A **bus-recovery clock sequence** (nine clocks unconditionally, then a manual
+STOP) runs before the peripheral is configured. It is standard practice and
+costs nothing on a healthy bus. It was *not* the fix here - measurement showed
+the lines idle high and zero recovery pulses needed - but a slave stranded
+mid-byte by a reset is a real hazard on a board that is reflashed constantly.
+
+**A tooling bug cost more time than any of the firmware bugs.** `capture.py`
+fell back to a bare `/dev/ttyACM*` glob when VID matching came up empty, and
+during a transient re-enumeration that returned this machine's **NVIDIA Tegra
+debug port** as the only candidate. Every read after that was addressed to
+someone else's hardware and came back silent, which looked exactly like the
+board having died. There is now no bare-glob fallback: a tool that guesses wrong
+is worse than one that admits it cannot find the device.
+
+**Phantom contacts.** INT gating was disabled during bring-up on purpose -
+polarity was an assumption, and a wrong one would have made a working controller
+look dead. Left off, polling the status register returned whatever the
+controller last held, which is *not* the same as "no contact": contacts
+flickered on and off, and a coordinate label churned set/cleared every frame,
+costing 6,656 px a frame on an untouched screen. With gating restored,
+`lblfr` stays frozen while nothing is touching.
+
+### 11.4 Span-boundary debris - REAL, WORKED AROUND, NOT EXPLAINED
+
+Text over the moving bar leaves debris while a label is updating. Static text
+over the same moving bar is perfect.
+
+**What was eliminated, with evidence:**
+
+| ruled out | how |
+|---|---|
+| lost or failed flushes | `fails=0` across 441 touched frames |
+| phantom contacts | `lblfr` frozen with nothing touching |
+| sub-width *transmission* | 3 ledger cases, exact byte counts and digests |
+| multi-span frames | ledger case, 3 spans, `px=17664/17664`, digest match |
+| marking logic | host panel simulation, 400 frames of the exact scene, zero mismatched rows |
+| **the panel ignoring partial column windows** | **on-glass band test: it honours them** |
+
+The band test is what turned the investigation. Three bands of known geometry -
+one full width, two narrow and on opposite edges - showed partial windows
+working correctly, killing the leading theory, and then showed **colour from one
+band bleeding into the start of the next**. That is debris at a transfer
+boundary, not a geometry fault.
+
+**The hidden variable was span COUNT, not width.** `elide` coalesces contiguous
+rows only when their extents are IDENTICAL, so a narrow label mark sitting among
+full-width bar marks splits one span into three or four. Measured: 2 spans
+static, 4 while a label updates. Width only ever mattered because it prevented
+coalescing.
+
+**Partial fix, kept:** `spi2_flush_afifo()` drains the output AFIFO at the start
+of each span. `spi2_dma_start()` has always done this and IDF's
+`spi_hal_hw_prepare_tx()` does the same; the FIFO path - the one that ships -
+never did. It is a genuine defect and it is now fixed. **It did not resolve the
+artifact**, so the explanation is incomplete and this is recorded as such.
+
+**Workaround, kept and documented in `gfx.c`:** a changed label marks its full
+ROWS rather than its columns, keeping those rows in one span with their
+neighbours. Cost is bounded and small - 368 columns instead of 208 on label rows
+only, 1.8x, on text updates alone. Rectangles still mark sub-width, so the large
+win is untouched.
+
+**Residual:** a thin line of the bar's colour survives one pass when a touch
+readout updates while the bar crosses it. Judged acceptable: a full-width band
+scrolling continuously under changing text is a stress case, not an interface.
+
+**What this needs, and does not have:** an on-device check that reproduces
+span-boundary debris without a human looking at the screen. The transmit ledger
+is structurally blind to it - the bytes handed to the peripheral are correct,
+and what leaks is on the far side of that measurement. This is the same blind
+spot that has banded DMA parked (6.6l), and being in it again is the honest
+status.
+
+---
+
 ## Appendix A — Register reference
 
 Confirmed against ESP-IDF v5.5.5 `soc/esp32s3` headers.

@@ -35,13 +35,20 @@ def find_port():
     """
     hits = [p.device for p in list_ports.comports() if p.vid == ESPRESSIF_VID]
     if not hits:
-        # by-id survives re-enumeration renaming ttyACMn; fall back to it, then
-        # to the raw device nodes, for setups where VID is not exposed.
-        hits = sorted(glob.glob("/dev/serial/by-id/*USB_JTAG*")) \
-            or sorted(glob.glob("/dev/ttyACM*"))
+        # by-id encodes the device identity and survives ttyACMn renumbering.
+        # There is deliberately NO fallback to a bare /dev/ttyACM* glob: this
+        # machine also has an NVIDIA Tegra debug port, and during a transient
+        # re-enumeration that glob returned it as the only candidate. Every
+        # read after that was addressed to somebody else's hardware and came
+        # back silent, which looked exactly like the board having died - and
+        # cost a long detour diagnosing firmware that was working fine.
+        # A tool that guesses wrong is worse than one that admits it cannot
+        # find the device.
+        hits = sorted(glob.glob("/dev/serial/by-id/*USB_JTAG*"))
     if not hits:
         sys.exit("no Espressif USB-Serial-JTAG device found.\n"
                  "  is the board plugged in?  lsusb | grep 303a\n"
+                 "  (a bare /dev/ttyACM* is NOT assumed to be the board)\n"
                  "  override with -p /dev/ttyACMn")
     if len(hits) > 1:
         sys.exit("several candidate ports; pick one with -p:\n  " +

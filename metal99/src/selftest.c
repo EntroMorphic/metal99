@@ -287,6 +287,52 @@ int selftest_transport(void)
     fails += selftest_glyph();
 
     /*
+     * MULTIPLE SPANS IN ONE FRAME.
+     *
+     * Every case above writes ONE span. A real frame writes several - a moving
+     * element, a changed label, a resync slice - each with its own address
+     * window and its own CS cycle, back to back. That sequencing has never been
+     * checked, and it is the difference between a frame that is quiet and one
+     * that is not: measured on hardware, a static scene uses 2 spans and a
+     * scene with a changing text label uses 4.
+     *
+     * Disjoint spans, folded in the order they are sent, so the digest catches
+     * a span landing in the wrong window as readily as one carrying wrong
+     * bytes.
+     */
+    {
+        static const int sp[3][2] = { { 0, 7 }, { 100, 107 }, { 200, 207 } };
+        static uint16_t VEC_ALIGN ref[SH8601_WIDTH];
+        uint32_t want = 0u, want_dig, got_px, dig;
+        int c, y;
+
+        vec_fold_reset();
+        for (c = 0; c < 3; c++)
+            for (y = sp[c][0]; y <= sp[c][1]; y++) {
+                probe(ref, y);
+                vec_fold(ref, ROW_BYTES);
+                want += (uint32_t)ROW_BYTES;
+            }
+        want_dig = vec_fold_get();
+
+        spi2_ledger_reset();
+        rc = SPI2_OK;
+        for (c = 0; c < 3 && rc == SPI2_OK; c++)
+            rc = sh8601_write_span((uint16_t)sp[c][0], (uint16_t)sp[c][1], probe);
+        got_px = spi2_ledger_pixel_bytes();
+        dig    = spi2_ledger_digest();
+
+        con_puts("\r\nself-test: MULTI-SPAN frame\r\n  3 spans: rc=");
+        con_dec((int32_t)rc);
+        con_puts(" px="); con_dec((int32_t)got_px);
+        con_puts("/");    con_dec((int32_t)want);
+        con_puts(" dig="); con_hex32(dig);
+        con_puts("/");     con_hex32(want_dig);
+        if (rc == SPI2_OK && got_px == want && dig == want_dig) con_puts("  PASS\r\n");
+        else { con_puts("  FAIL\r\n"); fails++; }
+    }
+
+    /*
      * VALIDATE THE INSTRUMENT.
      *
      * A verifier that always passes is worthless, and four previous versions
