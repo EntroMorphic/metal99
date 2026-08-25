@@ -123,8 +123,15 @@ correct because something kept fixing it.
 ```sh
 ./tools/flash.sh -c 20        # build, flash to 0x0, capture 20s of output
 ./tools/capture.py -r -s 15   # reset and watch the console
-make -C tests/host test       # digest assertions, no board required
+make -C tests/host test       # 73 assertions, no board required
+make -C tests/host png        # render the app to images, no board required
 ```
+
+`make png` writes `out_ideal.png` (what the model says), `out_panel.png` (what
+a panel receiving only the marked spans would hold, resync off) and
+`out_diff.png` (disagreements in magenta). It links the **real** `gfx`, `elide`,
+`ui` and the app, so a layout can be looked at without hardware — for most of
+this project's life that was the one thing that could not be done.
 
 The serial port is auto-detected by USB vendor ID; `PORT=/dev/ttyACMn` or
 `capture.py -p` overrides it.
@@ -165,6 +172,8 @@ To restore the stock Waveshare firmware, see [`backup/RESTORE.md`](backup/RESTOR
 | `elide.c` | dirty-row tracking, span coalescing, rolling resync |
 | `gfx.c` | retained-mode layer — dirtiness derived, not declared; runs, rects and text labels |
 | `font.h` `font_share.c` | 1bpp bitmap fonts, rasterised from TTF at build time |
+| `app.h` `app_demo.c` | the application boundary — three callbacks and a name |
+| `ui.c` | input events: press/drag/release/tap/long, hit testing |
 | `i2c.c` | I2C0 master from registers, bus recovery, scan |
 | `touch.c` | FT3168 capacitive touch, two contacts |
 | `selftest.c` | on-device verification + fault injection |
@@ -214,6 +223,31 @@ Other findings, all measured rather than assumed:
 
 Two non-negotiable rules — pure C99 and no scalar per-element math — plus a
 verification discipline earned the hard way. See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Writing an application
+
+An app is three callbacks and a name:
+
+```c
+static void my_init(void)                 { /* draw what never changes */ }
+static void my_frame(uint32_t f)          { /* DESCRIBE the whole scene */ }
+static void my_event(const ui_event *e)   { /* press/drag/release/tap/long */ }
+
+const app_t APP = { "mine", my_init, my_frame, my_event };
+```
+
+`frame()` describes the **entire** scene every frame. That is not wasteful:
+`gfx_present` diffs the description against what the panel actually holds, so
+redescribing something unchanged transmits nothing (§5.2). Incremental drawing
+is not just unnecessary here, it is a bug source — telling the layer about a
+*step* rather than a *state* is how erase-then-draw leaves debris.
+
+Events arrive before `frame()`. `ui_anchored_in()` is usually what a button
+wants: a press that began on one control and lifted on another activates
+neither.
+
+The same app links into `tests/host/gfx_png`, so it can be rendered and
+inspected without a board.
 
 ## Text
 

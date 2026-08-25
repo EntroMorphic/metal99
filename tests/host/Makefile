@@ -4,10 +4,11 @@
 CFLAGS = -std=c99 -pedantic-errors -Wall -Wextra -Wshadow -Werror -O2 \
          -I../../metal99/src
 FOLD   = ../../metal99/src/fold.c
+RGB    = ../../metal99/src/rgb565.c
 
-all: host_render digest_test gfx_test gfx_png
+all: host_render digest_test gfx_test ui_test gfx_png
 
-host_render: host_render.c vec_host.c $(FOLD)
+host_render: host_render.c vec_host.c $(FOLD) $(RGB)
 	$(CC) $(CFLAGS) $^ -o $@
 
 # Links metal99/src/fold.c: the assertions run against the firmware's own
@@ -18,23 +19,30 @@ digest_test: digest_test.c vec_host.c $(FOLD)
 # gfx_test links the real metal99/src/gfx.c and stubs only the layers below it,
 # so the run model under test is the firmware's own.
 gfx_test: gfx_test.c gfx_stubs.c ../../metal99/src/gfx.c ../../metal99/src/elide.c \
-          ../../metal99/src/font_share.c vec_host.c $(FOLD)
+          ../../metal99/src/font_share.c vec_host.c $(FOLD) $(RGB) $(RGB)
 	$(CC) $(CFLAGS) $^ -o $@
 
 # Renders scenes to images so a change can be LOOKED at without a panel.
 gfx_png: gfx_png.c gfx_stubs.c ../../metal99/src/gfx.c ../../metal99/src/elide.c \
-         ../../metal99/src/font_share.c vec_host.c $(FOLD)
+         ../../metal99/src/ui.c ../../metal99/src/app_demo.c \
+         ../../metal99/src/font_share.c vec_host.c $(FOLD) $(RGB)
 	$(CC) $(CFLAGS) $^ -o $@
 
 png: gfx_png
 	./gfx_png $(FRAMES)
 	@python3 ../../tools/topng.py out_ideal.ppm out_panel.ppm out_diff.ppm
 
-test: digest_test gfx_test
+ui_test: ui_test.c gfx_stubs.c ../../metal99/src/ui.c ../../metal99/src/gfx.c \
+         ../../metal99/src/elide.c ../../metal99/src/font_share.c vec_host.c \
+         $(FOLD) $(RGB)
+	$(CC) $(CFLAGS) $^ -o $@
+
+test: digest_test gfx_test ui_test
 	./digest_test
 	./gfx_test
+	./ui_test
 
 clean:
-	rm -f host_render digest_test gfx_test gfx_png *.ppm *.png
+	rm -f host_render digest_test gfx_test ui_test gfx_png *.ppm *.png
 
 .PHONY: all clean test png

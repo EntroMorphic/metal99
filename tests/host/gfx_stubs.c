@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include "elide.h"
 #include "sh8601.h"
+#include "touch.h"
 #include "gfx_stubs.h"
 
 mark_t   g_marks[MAX_MARKS];
@@ -53,7 +54,29 @@ int sh8601_write_span(uint16_t y0, uint16_t y1, void (*rowfn)(uint16_t *, int))
 static sh8601_stats g_ss;
 const sh8601_stats *sh8601_last_frame(void) { return &g_ss; }
 
-uint32_t cpu_cycles(void) { return 0u; }
+/*
+ * A settable clock and a scripted finger, so the simulator can drive the SAME
+ * app the device runs. ui.c derives tap and long-press from cpu_cycles deltas,
+ * so a clock stuck at zero would make every release a tap and no press ever
+ * long - the event layer would be exercised but not tested.
+ */
+uint32_t g_cpu_hz = 160000000u;
+static uint32_t g_cyc;
+
+uint32_t cpu_cycles(void) { return g_cyc; }
+void stub_advance_ms(uint32_t ms) { g_cyc += ms * (g_cpu_hz / 1000u); }
+
+static touch_state g_ts;
+void stub_touch_set(int n, int x, int y, int id)
+{
+    g_ts.n = (uint8_t)n;
+    if (n > 0) { g_ts.p[0].x = (uint16_t)x; g_ts.p[0].y = (uint16_t)y;
+                 g_ts.p[0].id = (uint8_t)id; }
+}
+int touch_poll(touch_state *st) { *st = g_ts; return TOUCH_OK; }
+int touch_init(void) { return TOUCH_OK; }
+uint8_t touch_chip_id(void)   { return 0x64u; }
+uint8_t touch_vendor_id(void) { return 0x11u; }
 
 int marked(int y, int *x0, int *x1)
 {

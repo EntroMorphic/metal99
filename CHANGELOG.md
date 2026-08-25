@@ -124,6 +124,25 @@ one continuous run.
   which is part of how the constant-zero return went unnoticed. It now prints
   the return value, so the two disagreeing would be visible.
 
+### Added — an application boundary
+- **`app.h`**: an app is three callbacks and a name. `main.c` owns bringing the
+  hardware up and proving it works; the app owns what is on the screen. It was
+  597 lines with the demo tangled through boot, the self-test and the pacing
+  loop — changing a button meant editing the firmware's entry point. Now 230,
+  and the image shrank 23.5 KB → 19.7 KB.
+- **`ui.c`**: press / drag / release / tap / long-press, plus hit testing.
+  `touch.c` reports where fingers *are*; an interface needs to know what just
+  *happened*, and the gap is entirely edge cases every program would otherwise
+  reimplement and get wrong — a tap bounded in time *and* space, a drag that
+  remembers its anchor, a long press that fires once while still down, and
+  contacts matched by the controller's tracking id rather than array position
+  so two fingers crossing don't swap identities. 14 assertions.
+- **The same app renders on the host.** `tests/host/gfx_png` links the real
+  `gfx`, `elide`, `ui` and the app, synthesises events, and writes ideal/panel/
+  diff images. A layout can now be designed and looked at without a board.
+- `sh8601_rgb565` moved to `rgb565.c` so host and device share one definition —
+  `host_render.c` had been carrying a copy.
+
 ### Added — touch
 - **I2C0 master from registers** (`i2c.c`): 400 kHz, bus-recovery clock
   sequence, full-configuration recovery after a NACK, and an address scan kept

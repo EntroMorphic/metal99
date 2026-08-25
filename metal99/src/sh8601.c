@@ -43,12 +43,6 @@ int sh8601_brightness(uint8_t level)
 
 #define OPCODE_PIXEL 0x32u
 
-uint16_t sh8601_rgb565(uint8_t r, uint8_t g, uint8_t b)
-{
-    uint16_t c = (uint16_t)(((r & 0xF8u) << 8) | ((g & 0xFCu) << 3) | (b >> 3));
-    return (uint16_t)((c >> 8) | (c << 8));   /* panel wants big-endian */
-}
-
 int sh8601_set_window(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
 {
     uint8_t VEC_ALIGN p[16];

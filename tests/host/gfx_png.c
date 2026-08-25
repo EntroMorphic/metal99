@@ -30,6 +30,8 @@
 #include <stdlib.h>
 #include "gfx.h"
 #include "elide.h"
+#include "app.h"
+#include "ui.h"
 #include "font.h"
 #include "gfx_stubs.h"
 
@@ -86,40 +88,38 @@ static void render_ideal(void)
 
 int main(int argc, char **argv)
 {
-    const uint16_t BLACK = 0x0000u, ORANGE = 0x03FCu, CYAN = 0x1F7Fu;
     int frames = (argc > 1) ? atoi(argv[1]) : 120;
-    int f, bar = 0, y, x, bad = 0;
-    char lbl[16];
+    int f, y, x, bad = 0;
 
     gfx_init();
+    ui_init();
     (void)gfx_present();
     elide_set_resync(0u);          /* no scrubbing: a missed mark must persist */
+    if (APP.init) APP.init();
 
     /* Seed both from a full repaint, as the first present does on hardware. */
-    (void)gfx_solid(0, H - 1, BLACK);
     (void)gfx_present();
     render_ideal();
     memcpy(g_panel, g_ideal, sizeof g_panel);
 
     for (f = 0; f < frames; f++) {
-        bar = (bar + 4) % (H - 96);
-        (void)gfx_solid(0, H - 1, BLACK);
-        (void)gfx_solid((uint16_t)bar, (uint16_t)(bar + 95), ORANGE);
-        (void)gfx_text(0, 16, 8, "metal99 60Hz", CYAN, &share_mono_16x32);
-        lbl[0] = '0'; lbl[1] = ' '; lbl[2] = 'X'; lbl[3] = ':';
-        lbl[4] = (char)('0' + (f / 100) % 10);
-        lbl[5] = (char)('0' + (f / 10) % 10);
-        lbl[6] = (char)('0' + f % 10);
-        lbl[7] = ' '; lbl[8] = 'Y'; lbl[9] = ':';
-        lbl[10] = (char)('0' + (f / 7) % 10);
-        lbl[11] = (char)('0' + (f / 3) % 10);
-        lbl[12] = (char)('0' + (f * 2) % 10);
-        lbl[13] = '\0';
-        (void)gfx_text(1, 16, 56, lbl, CYAN, &share_mono_16x32);
+        /* A finger dragging diagonally for the middle third of the run, so the
+         * rendered scene exercises press, drag and release rather than showing
+         * an idle screen. */
+        /* A brief tap early (so TAPS increments and the counter is not always
+         * zero), then a finger held down for the rest, so the final image shows
+         * the touch readout rather than an idle screen. */
+        if (f == 10 || f == 11) stub_touch_set(1, 120, 60, 3);
+        else if (f > frames / 3) stub_touch_set(1, 40 + (f % 200), 150 + (f / 4), 0);
+        else stub_touch_set(0, 0, 0, 0);
+
+        ui_poll(APP.event);
+        if (APP.frame) APP.frame((uint32_t)f);
 
         stub_reset();
         (void)gfx_present();
         panel_apply();
+        stub_advance_ms(16u);
     }
     render_ideal();
 
@@ -130,8 +130,8 @@ int main(int argc, char **argv)
     put_ppm("out_ideal.ppm", &g_ideal[0][0], 0);
     put_ppm("out_panel.ppm", &g_panel[0][0], 0);
     put_ppm("out_diff.ppm",  &g_panel[0][0], 1);
-    printf("%d frames, resync off: %d pixel(s) where the panel disagrees "
-           "with the model\n", frames, bad);
+    printf("app \"%s\", %d frames, resync off: %d pixel(s) where the panel "
+           "disagrees with the model\n", APP.name, frames, bad);
     printf("  out_ideal.ppm  out_panel.ppm  out_diff.ppm (magenta = mismatch)\n");
     return 0;
 }

@@ -9,16 +9,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include "vec.h"
+#include "sh8601.h"
 
 #define W 368
 #define H 448
 #define ROW_VECTORS (W * 2 / VEC_BYTES)
 
-static uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b)
-{
-    uint16_t c = (uint16_t)(((r & 0xF8u) << 8) | ((g & 0xFCu) << 3) | (b >> 3));
-    return (uint16_t)((c >> 8) | (c << 8));      /* panel wire order */
-}
+/* rgb565 comes from metal99/src/rgb565.c - the device's own, not a copy. */
+#define rgb565 sh8601_rgb565
 
 static void colorbars(uint16_t *row, int y)
 {
