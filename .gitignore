@@ -45,4 +45,8 @@ tests/host/game_png
 # factory app in compiled form. It was tracked once; the history was rewritten to
 # drop it. Keep your own copy here to restore the board - it stays out of git.
 #   esptool --chip esp32s3 -b 921600 read_flash 0 0x1000000 backup/stock-full-16MB.bin
-backup/
+#
+# The DUMP is ignored. backup/RESTORE.md and the .sha256 stay tracked - the
+# instructions and the integrity check are the parts worth sharing, and they
+# are what make the ignored file reproducible.
+backup/*.bin
