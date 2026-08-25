@@ -6,8 +6,16 @@
 #   ./tools/flash.sh -c 20      build, flash, then capture 20s with reset
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PORT="${PORT:-/dev/ttyACM1}"
 LOG="$ROOT/logs/build-$(date +%H%M%S).log"
+
+# ONE port-resolution rule, shared with capture.py. This used to default to
+# /dev/ttyACM1 while capture.py defaulted to a by-id path naming one specific
+# board - two different answers for the same device, and both wrong on any
+# other machine. PORT= still overrides.
+resolve_port() {
+  [ -n "${PORT:-}" ] && { echo "$PORT"; return; }
+  "$ROOT/tools/capture.py" --print-port
+}
 BUILD_ONLY=0; CAPTURE=0
 
 while getopts "bc:" o; do
@@ -27,6 +35,8 @@ fi
 tail -2 "$LOG"
 [ "$BUILD_ONLY" = 1 ] && exit 0
 
+PORT="$(resolve_port)"
+echo "port: $PORT"
 esptool --port "$PORT" write-flash 0x0 "$ROOT/metal99/build/fw.bin" 2>&1 \
   | grep -aE "Hash of data verified|Wrote" || { echo "FLASH FAILED"; exit 1; }
 
