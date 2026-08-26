@@ -40,6 +40,7 @@ int sh8601_write_frame(void (*rowfn)(uint16_t *row, int y))
  * elides - a present that quietly sent all 448 every frame would otherwise
  * pass every test in this file. */
 static int g_rows_sent;
+static int g_record = 1;   /* only count the present WE drive */
 static int g_spans;
 static uint16_t g_panel[H][W];   /* what the glass holds, retained like glass */
 static uint8_t  g_sent_row[H];   /* was this row transmitted THIS frame?      */
@@ -47,6 +48,7 @@ int sh8601_write_span_x(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1,
                         void (*rowfn)(uint16_t *, int))
 {
     int y;
+    if (!g_record) return 0;
     g_spans++;
     for (y = y0; y <= (int)y1; y++) {
         int x;
@@ -84,14 +86,25 @@ int main(void)
             if (APP.event) APP.event(&e);
         }
         { int q; for (q = 0; q < H; q++) g_sent_row[q] = 0; }
+        /* The app presents through tile_present now; tile_test covers that.
+         * Ignore its output here so this file keeps measuring vg_present. */
+        g_record = 0;
         if (APP.frame((uint32_t)f) != 0) bad_rc++;
 
         /*
-         * The app presents through vg_present() itself again, so g_panel is
-         * already the elided result. Driving it a second time here would send
-         * every lit row twice and double the row count - which it did once,
-         * caught by the row-count check.
+         * Now present the SAME frame through vg_present, into the panel model.
+         * The app no longer uses this path - it presents through tiles - so
+         * without this vg_present would go untested, and an untested present
+         * is how a regression waits.
+         *
+         * If gridvoid ever moves back to vg_present, DELETE THIS: it would
+         * send every lit row twice and double the row count. That is not
+         * hypothetical; it has happened twice in this file's history.
          */
+        g_record = 1;
+        vg_finish();
+        if (vg_present() != 0) bad_rc++;
+
         if (vg_count() > worst_segs) worst_segs = vg_count();
 
         /*

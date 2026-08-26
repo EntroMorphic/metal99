@@ -126,3 +126,55 @@ void vec_glyph_row(uint16_t *dst, const uint8_t *bits, uint32_t bytes,
         "  bnez           %2, 1b                                           \n"
         : "+a"(dst), "+a"(bits), "+a"(bytes) : : "memory");
 }
+
+void vec_hash16(const void *p, uint32_t vectors, uint32_t stride_bytes,
+                uint32_t out[8])
+{
+    static const uint16_t K[2] = { 0x9E37u, 0xB2C5u };
+    uint32_t *op = out;
+    uint32_t pass;
+
+    if (vectors == 0u) {
+        uint32_t i;
+        for (i = 0u; i < 8u; i++) out[i] = 0u;
+        return;
+    }
+
+    /*
+     * TWO PASSES, TWO CONSTANTS. An earlier version ran two accumulators in
+     * ONE pass, on the theory that FNV-1a and FNV-1 order were different
+     * functions:
+     *
+     *     A: a = (a ^ d) * K        B: b = (b * K) ^ d
+     *
+     * Write out the recurrences and a_n = K * b_n exactly. They are the same
+     * function scaled by K, so the second accumulator carried no information
+     * at all, and the equivalence test kept failing for one multiplier while
+     * passing for others. Two passes with genuinely different constants cost
+     * one extra walk of the tile - about 1 ms a frame - and are independent
+     * for real.
+     */
+    for (pass = 0u; pass < 2u; pass++) {
+        const uint8_t *ptr = (const uint8_t *)p;
+        uint32_t n = vectors;
+        uint16_t k = K[pass];
+
+        __asm__ __volatile__ ("ee.vldbc.16 " VEC_Q_HK ", %0"
+                              : : "a"(&k) : "memory");
+        __asm__ __volatile__ ("ee.zero.q " VEC_Q_HACC);
+
+        __asm__ __volatile__ (
+            "1:                                                             \n"
+            "  ee.vld.128.ip " VEC_Q_HDAT ", %0, 0                          \n"
+            "  ee.xorq       " VEC_Q_HACC ", " VEC_Q_HACC ", " VEC_Q_HDAT " \n"
+            "  ee.vmul.u16   " VEC_Q_HACC ", " VEC_Q_HACC ", " VEC_Q_HK "   \n"
+            "  add           %0, %0, %2                                     \n"
+            "  addi.n        %1, %1, -1                                     \n"
+            "  bnez          %1, 1b                                         \n"
+            : "+a"(ptr), "+a"(n) : "a"(stride_bytes) : "memory");
+
+        /* out must be 16-byte aligned for this store. tile.c's is. */
+        __asm__ __volatile__ ("ee.vst.128.ip " VEC_Q_HACC ", %0, 16"
+                              : "+a"(op) : : "memory");
+    }
+}

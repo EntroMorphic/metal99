@@ -66,6 +66,22 @@
  * The one pairing worth naming is q3, shared with the SPI2 FIFO load -
  * sh8601_write_span_x renders a whole row and only then streams it, so the
  * glyph blit has finished before the FIFO load begins. */
+/*
+ * vec_hash16 is the second sharer, taking the three registers vec_ramp16 and
+ * vec_xor16 own. The proof is the same shape as the glyph one and just as
+ * structural: ramp and xor exist ONLY for selftest.c, which runs once at boot
+ * before any application starts, and hashing happens inside tile_present in the
+ * frame loop. They cannot interleave because they cannot both be running.
+ *
+ * If a vec_ramp16 or vec_xor16 caller ever appears outside selftest, this stops
+ * being true and the hash needs its own registers. There are none free, so it
+ * would need a different construction.
+ */
+#define VEC_Q_HACC   VEC_Q_RAMP   /* q4  accumulator A, 8 lanes      */
+#define VEC_Q_HDAT   VEC_Q_STEP   /* q5  chunk being folded in       */
+#define VEC_Q_HK     VEC_Q_XORD   /* q6  the odd multiplier          */
+#define VEC_Q_HACC2  VEC_Q_XORS   /* q7  accumulator B               */
+
 #define VEC_Q_GBITS  VEC_Q_FILL   /* q0  broadcast glyph byte        */
 #define VEC_Q_GLANE  VEC_Q_COPY   /* q1  {0x80,0x40,...,0x01}        */
 #define VEC_Q_GZERO  VEC_Q_ZERO   /* q2  zero, for the compare       */
@@ -155,5 +171,49 @@ void vec_glyph_row(uint16_t *dst, const uint8_t *bits, uint32_t bytes,
 void     vec_fold_reset(void);
 void     vec_fold(const void *p, uint32_t bytes);
 uint32_t vec_fold_get(void);
+
+/*
+ * Hash `vectors` 128-bit chunks starting at `p`, stepping `stride_bytes`
+ * between them, into one 32-bit value.
+ *
+ * EIGHT INDEPENDENT LANES, each running acc = (acc * K) ^ data. The multiply
+ * is what makes it position-sensitive: XOR alone is order-insensitive, so a
+ * lit pixel moving inside a tile would be invisible to it - which is exactly
+ * the change a vector scene makes most often, and would be the worst possible
+ * blind spot. K is odd, so multiplication is a bijection mod 2^16 and no lane
+ * loses information.
+ *
+ * The stride exists because a tile is a COLUMN: one vector per row, W pixels
+ * apart. Walking it needs a register-sized step, not an immediate.
+ *
+ * This replaces a scalar multiply-add over every pixel, which measured 8 ms a
+ * frame on the device - more than the transmit it was deciding about, and a
+ * plain violation of the no-scalar-per-element rule.
+ *
+ * EIGHT WORDS COME OUT, from TWO accumulators, and the reason is arithmetic
+ * rather than caution.
+ *
+ * The lanes are independent COLUMNS: lane l only ever sees pixel l of each
+ * chunk. A column that stays black contributes a constant, so a tile with one
+ * lit column carries just that lane's SIXTEEN bits of state - no matter how
+ * many bits the whole accumulator has. A 16-pixel column has millions of
+ * possible contents, so by pigeonhole two of them share a hash, and at the
+ * ~700k tile comparisons a 3000-frame test performs you expect about ten
+ * collisions. That is exactly what happened: the equivalence test failed, and
+ * the failing frame MOVED when the multiplier changed - the signature of a
+ * collision, not a logic error. Widening from 32 to 128 bits did not help,
+ * because the missing entropy was per-lane.
+ *
+ * So each lane now runs two different functions over the same data:
+ *
+ *     A:  acc = (acc ^ data) * K      FNV-1a order
+ *     B:  acc = (acc * K) ^ data      FNV-1 order
+ *
+ * Two functions, one constant - which matters because there is no ninth vector
+ * register to hold a second one. Colliding in both at once is ~2^-32 per
+ * comparison, and a missed collision is a stale tile that is never sent.
+ */
+void vec_hash16(const void *p, uint32_t vectors, uint32_t stride_bytes,
+                uint32_t out[8]);
 
 #endif /* VEC_H */

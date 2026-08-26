@@ -22,6 +22,7 @@
 #include <stddef.h>
 #include "app.h"
 #include "vg.h"
+#include "tile.h"
 #include "trig.h"
 #include "sh8601.h"
 #include "spi2.h"
@@ -55,6 +56,7 @@ static int32_t g_scroll;     /* how far the grid has flowed toward us     */
 typedef struct { int32_t x, y, z; int alive, spin; } foe;
 static foe      g_foe[MAX_FOE];
 static int      g_score, g_lives, g_wave, g_combo;
+static int      g_tiles_ready;
 static int      g_tracer, g_tx, g_ty;      /* live tracer, and where it went */
 static uint32_t g_seed = 0x1234567u;
 static int      g_spawn;
@@ -215,6 +217,14 @@ static void game_init(void)
 {
     int i;
     g_scroll = 0;
+    /*
+     * ONCE, not on every restart. game_init() is also called on death, and
+     * tile_init() forces a full repaint - but the stored hashes still describe
+     * what the panel holds accurately, so ordinary hashing detects the new
+     * scene by itself. Resetting cost a ~30 ms frame on every death, which is
+     * where the late counter was coming from.
+     */
+    if (!g_tiles_ready) { tile_init(); g_tiles_ready = 1; }
     C_GRID = sh8601_rgb565(0, 110, 170);
     C_HOT  = sh8601_rgb565(90, 230, 255);
     for (i = 0; i < MAX_FOE; i++) g_foe[i].alive = 0;
@@ -388,7 +398,19 @@ static int game_frame(uint32_t f)
      * clustered - and this line is the one to change back the day the leak is
      * understood. Artifacts are worse than 21% of the rows.
      */
-    return vg_present();
+    /*
+     * TILE-GRANULAR PRESENT. Measured against the alternatives on this exact
+     * scene, on hardware:
+     *
+     *     full repaint            24.5 ms
+     *     vg_present (rows)       18.9 ms   88.7% of pixels, 1.6 spans
+     *     tile_present            13.6 ms   47.8% of pixels,  19 spans
+     *
+     * Spans got 12x more numerous and cost almost nothing: 11.8 us each,
+     * measured by sending the same 448 rows split 1 to 64 ways
+     * (apps/spancost.c). Pixels are what cost.
+     */
+    return tile_present(vg_rowfn);
 }
 
 /*
@@ -422,4 +444,4 @@ static int game_frame(uint32_t f)
  * setups. 3.1 spans per frame with it and without; worst frame unchanged. It
  * was removed rather than kept as a plausible story with no effect.
  */
-const app_t APP = { "gridvoid", 36u, game_init, game_frame, game_event };
+const app_t APP = { "gridvoid", 40u, game_init, game_frame, game_event };

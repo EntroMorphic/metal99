@@ -84,3 +84,44 @@ void vec_glyph_row(uint16_t *dst, const uint8_t *bits, uint32_t bytes,
         for (b = 0u; b < 8u; b++)
             if (bits[i] & (0x80u >> b)) dst[i * 8u + b] = fg;
 }
+
+/*
+ * Scalar mirror of vec_hash16, lane for lane.
+ *
+ * The device version runs eight 16-bit lanes of acc = (acc * K) ^ data through
+ * the PIE unit. This reproduces that exactly - same lane count, same constant,
+ * same fold - so a hash computed here means what it means on hardware. A host
+ * stub that merely "hashes somehow" would let the host tests pass while the
+ * device disagreed about which tiles changed.
+ */
+#ifndef VEC_HASH_K
+#define VEC_HASH_K 0x9E37u
+#endif
+#ifndef VEC_HASH_K2
+#define VEC_HASH_K2 0xB2C5u
+#endif
+
+void vec_hash16(const void *p, uint32_t vectors, uint32_t stride_bytes,
+                uint32_t out[8])
+{
+    static const uint16_t K[2] = { VEC_HASH_K, VEC_HASH_K2 };
+    uint32_t pass, i, l;
+
+    if (vectors == 0u) { for (l = 0u; l < 8u; l++) out[l] = 0u; return; }
+
+    for (pass = 0u; pass < 2u; pass++) {
+        const unsigned char *ptr = (const unsigned char *)p;
+        uint16_t acc[8];
+        for (l = 0u; l < 8u; l++) acc[l] = 0u;
+        for (i = 0u; i < vectors; i++) {
+            for (l = 0u; l < 8u; l++) {
+                uint16_t d = (uint16_t)(ptr[l * 2u] | ((uint16_t)ptr[l * 2u + 1u] << 8));
+                acc[l] = (uint16_t)((uint16_t)(acc[l] ^ d) * K[pass]);
+            }
+            ptr += stride_bytes;
+        }
+        for (l = 0u; l < 4u; l++)
+            out[pass * 4u + l] = (uint32_t)acc[l * 2u]
+                               | ((uint32_t)acc[l * 2u + 1u] << 16);
+    }
+}

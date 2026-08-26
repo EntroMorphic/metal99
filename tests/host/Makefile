@@ -6,7 +6,7 @@ CFLAGS = -std=c99 -pedantic-errors -Wall -Wextra -Wshadow -Werror -O2 \
 FOLD   = ../../metal99/src/fold.c
 RGB    = ../../metal99/src/rgb565.c
 
-all: host_render digest_test gfx_test ui_test vg_test game_test gfx_png vg_png
+all: host_render digest_test gfx_test ui_test vg_test game_test tile_test gfx_png vg_png
 
 host_render: host_render.c vec_host.c $(FOLD) $(RGB)
 	$(CC) $(CFLAGS) $^ -o $@
@@ -29,7 +29,8 @@ gfx_png: gfx_png.c gfx_stubs.c ../../metal99/src/gfx.c ../../metal99/src/elide.c
 	$(CC) $(CFLAGS) $^ -o $@
 
 game_png: game_png.c ../../metal99/apps/gridvoid.c ../../metal99/src/vg.c \
-          ../../metal99/src/trig.c ../../metal99/src/elide.c vec_host.c $(RGB)
+          ../../metal99/src/trig.c ../../metal99/src/elide.c ../../metal99/src/tile.c \
+          vec_host.c $(RGB)
 	$(CC) $(CFLAGS) $^ -o $@
 
 gamepng: game_png
@@ -61,19 +62,26 @@ ASAN := $(shell echo 'int main(void){return 0;}' > /tmp/.asan$$$$.c && \
          $(CC) -fsanitize=address /tmp/.asan$$$$.c -o /dev/null 2>/dev/null && \
          echo -fsanitize=address; rm -f /tmp/.asan$$$$.c)
 
+tile_test: tile_test.c ../../metal99/apps/gridvoid.c ../../metal99/src/vg.c \
+           ../../metal99/src/trig.c ../../metal99/src/elide.c ../../metal99/src/tile.c \
+           vec_host.c $(RGB)
+	$(CC) $(CFLAGS) $^ -o $@
+
 game_test: game_test.c ../../metal99/apps/gridvoid.c ../../metal99/src/vg.c \
-           ../../metal99/src/trig.c ../../metal99/src/elide.c vec_host.c $(RGB)
+           ../../metal99/src/trig.c ../../metal99/src/elide.c ../../metal99/src/tile.c \
+           vec_host.c $(RGB)
 	$(CC) $(CFLAGS) $(ASAN) $^ -o $@
 
-test: digest_test gfx_test ui_test vg_test game_test
+test: digest_test gfx_test ui_test vg_test game_test tile_test
 	./digest_test
 	./gfx_test
 	./ui_test
 	./vg_test
 	./game_test
+	./tile_test
 	@../../tools/c99check.sh
 
 clean:
-	rm -f host_render digest_test gfx_test ui_test vg_test game_test gfx_png vg_png game_png *.ppm *.png
+	rm -f host_render digest_test gfx_test ui_test vg_test game_test tile_test gfx_png vg_png game_png *.ppm *.png
 
 .PHONY: all clean test png vgpng gamepng
