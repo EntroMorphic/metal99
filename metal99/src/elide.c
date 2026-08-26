@@ -3,6 +3,17 @@
 #include "io.h"
 #include "spi2.h"
 
+/*
+ * What another span is worth avoiding, in bytes of extra pixels.
+ *
+ * A span's measurable price is a window command plus a 20-byte pixel preamble,
+ * call it ~44 bytes. This is set far above that on purpose: short and isolated
+ * spans are what put debris on the glass (see the coalescing rule below), so
+ * spending a few hundred bytes of unchanged pixels to avoid creating one is a
+ * good trade. 1024 bytes is about 1.4 rows.
+ */
+#define ELIDE_SPAN_COST 1024u
+
 #define ROWS      SH8601_HEIGHT
 #define WORDS     ((ROWS + 31) / 32)
 
@@ -101,18 +112,43 @@ int elide_flush(void (*rowfn)(uint16_t *row, int y))
         if (!row_dirty(y)) { y++; continue; }
 
         /*
-         * Coalesce a contiguous run of rows sharing the SAME x-extent.
+         * Coalesce a contiguous run of rows, unioning their x-extents when
+         * that is cheaper than paying for another span.
          *
-         * Each span costs a window command plus a pixel-write preamble (20 B
-         * measured), so merging adjacent rows matters. But merging rows with
-         * DIFFERENT extents would force their union on all of them - two rows
-         * dirty at opposite edges would union to full width and send more than
-         * two separate spans would. Identical-extent is the rule because the
-         * common cases land on it exactly: a moving rect has one extent for all
-         * its rows, and a full-width repaint has one extent for all of them.
+         * The rule used to be IDENTICAL extents, and the reasoning was sound
+         * as far as it went: unioning two rows dirty at opposite edges forces
+         * full width on both and sends more than two spans would. What it
+         * priced was bytes. It turns out a span costs more than its preamble.
+         *
+         * gridvoid showed why. Debris appeared on exactly the frames that
+         * produced a SHORT, ISOLATED span - measured over 6000 frames, every
+         * frame containing an explosion had one and quiet frames mostly did
+         * not. Whatever the panel does with a stranded little window, it is
+         * not what we asked. So an extra span carries a correctness risk on
+         * top of its 44-odd bytes, and the exact-match rule was manufacturing
+         * them: a narrow label mark sitting among full-width bar marks split
+         * one span into three or four. That is why gfx has been marking label
+         * rows FULL WIDTH since - a workaround whose own comment admitted it
+         * was not an explanation.
+         *
+         * So: extend the run while the union stays cheaper than a new span.
+         * SPAN_COST is deliberately generous - it is the byte price plus a
+         * thumb on the scale for the risk - and the arithmetic is honest about
+         * what merging costs, so the opposite-edges case still splits.
          */
         y0 = y; x0 = g_dx0[y]; x1 = g_dx1[y];
-        while ((y < ROWS) && row_dirty(y) && g_dx0[y] == x0 && g_dx1[y] == x1) y++;
+        y++;
+        while ((y < ROWS) && row_dirty(y)) {
+            uint16_t ux0 = (g_dx0[y] < x0) ? g_dx0[y] : x0;
+            uint16_t ux1 = (g_dx1[y] > x1) ? g_dx1[y] : x1;
+            uint32_t rows  = (uint32_t)(y - y0);          /* already in the run */
+            uint32_t grow  = (uint32_t)((ux1 - ux0) - (x1 - x0)) * 2u;
+            uint32_t extra = rows * grow                  /* widening what we have */
+                           + (uint32_t)((ux1 - ux0) - (g_dx1[y] - g_dx0[y])) * 2u;
+            if (extra > ELIDE_SPAN_COST) break;
+            x0 = ux0; x1 = ux1;
+            y++;
+        }
         y1 = y - 1;
 
         rc = sh8601_write_span_x(x0, (uint16_t)y0, x1, (uint16_t)y1, rowfn);

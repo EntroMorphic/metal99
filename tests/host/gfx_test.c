@@ -322,8 +322,11 @@ int main(void)
         stub_reset();
         (void)gfx_text(0, 0, 100, "B", FG, F);
         (void)gfx_present();
-        check(marked(100, &a, &b) && a == 0 && b == W - 1,
-              "changed text marks its full rows (see gfx.c: span-count workaround)");
+        /* Its own columns. The full-width workaround is gone: elide unions
+         * extents when that beats another span, so callers no longer pre-widen
+         * themselves to keep span count down. */
+        check(marked(100, &a, &b) && a == 0 && b < W - 1,
+              "changed text marks its own columns, not the whole row");
         /* Expressed via the constant rather than a literal, so the padding can
          * change without silently making this assertion vacuous. */
         check(!marked(99, &a, &b) &&
@@ -339,15 +342,17 @@ int main(void)
         stub_reset();
         (void)gfx_text(0, 64, 200, "Hi", FG, F);
         (void)gfx_present();
-        check(marked(205, &a, &b) && a == 0 && b == W - 1,
-              "a moved label marks full rows at both positions");
+        check(marked(205, &a, &b) && a == 0 && b < W - 1,
+              "a moved label marks both positions, still not the whole row");
 
         /* Clearing repaints the background where it was. */
         stub_reset();
         (void)gfx_text_clear(0);
         (void)gfx_present();
-        check(marked(205, &a, &b) && a == 0 && b == W - 1,
-              "clearing a label marks the rows where it was");
+        /* Cleared at x=64, so exactly the columns it occupied - 64..79 for
+         * "Hi". The workaround charged the full 368 for this row. */
+        check(marked(205, &a, &b) && a == 64 && b < 128,
+              "clearing a label marks only the columns where it was");
         stub_render(205, g_row);
         check(g_row[64] == BG && g_row[70] == BG,
               "  and the row renders as pure background again");

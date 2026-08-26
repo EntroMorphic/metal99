@@ -397,37 +397,31 @@ int gfx_present(void)
         if (!label_differs(&g_label_sent[y], &g_label[y])) continue;
         g_stats.labels_changed++;
         /*
-         * A CHANGED LABEL MARKS ITS FULL ROWS, NOT ITS COLUMNS.
+         * Labels mark THEIR OWN COLUMNS, like every other element.
          *
-         * Marking only the label's columns is what the elision machinery is for
-         * and it is strictly fewer pixels - but it makes things visibly worse on
-         * hardware, reproducibly. elide coalesces contiguous rows only when
-         * their extents MATCH, so a narrow label mark sitting among full-width
-         * bar marks splits one span into three or four. Measured: 2 spans for a
-         * static scene, 4 while a text label updates.
+         * They marked full width for a long time because a narrow label mark
+         * among full-width bar marks split one span into three or four, and
+         * extra span boundaries put debris on the glass. The comment here used
+         * to end "this is a WORKAROUND, not an explanation... keeping it, with
+         * the reason, beats a fix nobody can find later".
          *
-         * Every extra span is another address-window change, another CS cycle,
-         * and empirically another chance for debris. Marking full width keeps
-         * the rows in one span with their neighbours.
+         * The reason is gone. elide no longer requires identical extents to
+         * coalesce - it unions them whenever that costs less than another span
+         * (see elide.c) - so the narrow mark now merges with its neighbours by
+         * arithmetic rather than by every caller pre-widening itself. A label
+         * sitting alone on otherwise clean rows stays narrow, which the
+         * workaround could never do: it paid full width unconditionally.
          *
-         * The cost is bounded and small: 368 columns instead of 208 for a
-         * 13-character label, so 1.8x on label rows only. Rectangles still mark
-         * their own columns, which is where the large win is (an 88x88 element
-         * costs its own area, not full rows).
-         *
-         * This is a WORKAROUND, not an explanation. The underlying fault is
-         * still debris at span boundaries; see DESIGN.md. Keeping it here, with
-         * the reason, beats a fix nobody can find later.
-         */
-        if (g_label_sent[y].len != 0u) {
+         * So this is strictly better than what it replaces, not merely equal:
+         * 368 columns instead of 208 was the old price on EVERY label row.
+         */        if (g_label_sent[y].len != 0u) {
             label_rect(&g_label_sent[y], &x0, &y0, &x1, &y1);
-            elide_mark_rect(0, y0, SH8601_WIDTH - 1, y1);
+            elide_mark_rect(x0, y0, x1, y1);
         }
         if (g_label[y].len != 0u) {
             label_rect(&g_label[y], &x0, &y0, &x1, &y1);
-            elide_mark_rect(0, y0, SH8601_WIDTH - 1, y1);
+            elide_mark_rect(x0, y0, x1, y1);
         }
-        (void)x0; (void)x1;
     }
 
     rc = elide_flush(gfx_rowfn);
