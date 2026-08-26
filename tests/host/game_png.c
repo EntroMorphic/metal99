@@ -48,6 +48,7 @@ uint32_t g_cpu_hz = 240000000u;
 static uint32_t g_cyc;
 uint32_t cpu_cycles(void) { return (g_cyc += 1000u); }
 
+extern int g_burst_active(void);
 int main(int argc, char **argv)
 {
     int frames = (argc > 1) ? atoi(argv[1]) : 1, f, y, x;

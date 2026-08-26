@@ -62,6 +62,29 @@ static uint32_t g_over;
  * what it was given. So the rows to transmit are (lit now UNION lit last
  * frame), and the second half of that union is what erases.
  */
+/*
+ * MINIMUM MARKED-RUN HEIGHT - an experiment, and possibly a fix.
+ *
+ * Measured over 6000 frames: every frame containing a burst produces at least
+ * one span shorter than 8 rows, minimum 1, isolated in the empty sky with
+ * large untransmitted gaps on both sides. Quiet frames produce one only 16% of
+ * the time. The device reports debris ONLY when anomalies explode, and that is
+ * the only structural difference those frames have.
+ *
+ * spanlab never reproduced it across four rounds, and this is why: it had
+ * 1-row spans, but always ADJACENT to their neighbours, so the window's Y
+ * address always advanced contiguously. It never made the panel jump.
+ *
+ * Padding a short run costs a handful of rows and makes the span ordinary. If
+ * the debris goes away, the trigger is short and/or isolated windows, and this
+ * is the shape of the fix.
+ */
+#define VG_MIN_RUN 48
+
+/* Merge runs separated by fewer than this many clean rows: sending a few rows
+ * that did not change is cheaper than another isolated window. */
+#define VG_MERGE_GAP 64
+
 #define LWORDS ((H + 31) / 32)
 static uint32_t g_lit[LWORDS];       /* rows carrying a segment this frame */
 static uint32_t g_lit_prev[LWORDS];  /* ...and last frame                  */
@@ -263,9 +286,25 @@ int vg_present(void)
     y = 0;
     while (y < H) {
         if (row_wanted(y)) {
-            int y0 = y;
-            while (y < H && row_wanted(y)) y++;
-            elide_mark(y0, y - 1);
+            int y0 = y, y1;
+            /* Absorb the next run too if the clean gap between them is small. */
+            for (;;) {
+                int probe;
+                while (y < H && row_wanted(y)) y++;
+                y1 = y - 1;
+                probe = y;
+                while (probe < H && probe - y < VG_MERGE_GAP && !row_wanted(probe)) probe++;
+                if (probe < H && row_wanted(probe)) { y = probe; continue; }
+                break;
+            }
+            /* Pad short runs outward, symmetrically, clamped to the panel. The
+             * extra rows are rendered and sent normally, so the picture is
+             * identical either way - only the window geometry changes. */
+            while ((y1 - y0 + 1) < VG_MIN_RUN && (y0 > 0 || y1 < H - 1)) {
+                if (y0 > 0)     y0--;
+                if (y1 < H - 1) y1++;
+            }
+            elide_mark(y0, y1);
         } else {
             y++;
         }
