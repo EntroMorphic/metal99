@@ -54,6 +54,18 @@ int  gdma_restart(const gdma_desc *first);
 uint32_t gdma_last_status(void);
 
 /* Register snapshot, for diagnosing a transfer that signalled nothing. */
+/*
+ * BRING-UP INSTRUMENTATION - currently called by nothing.
+ *
+ * These read counters and latched register state that were load-bearing while
+ * the banded DMA path was being brought up, and are unreferenced today, so --gc-sections
+ * drops them and they cost the image nothing.
+ *
+ * KEPT, not archived: they are instruments, and instruments belong in the repo
+ * (CONTRIBUTING.md). The only debt was that they sat in the working API with
+ * no sign saying so - a reader could reasonably take them for part of the
+ * interface rather than a debugger's toolkit.
+ */
 uint32_t gdma_dbg_link(void);
 uint32_t gdma_dbg_conf0(void);
 

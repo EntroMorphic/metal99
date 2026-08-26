@@ -50,6 +50,18 @@ int touch_poll(touch_state *st);
 
 /* Poll accounting, used to decide whether INT gating is safe to enable:
  * int_low should track with_touch closely if the line is an active-low level. */
+/*
+ * BRING-UP INSTRUMENTATION - currently called by nothing.
+ *
+ * These read counters and latched register state that were load-bearing while
+ * the FT3168 and its INT line was being brought up, and are unreferenced today, so --gc-sections
+ * drops them and they cost the image nothing.
+ *
+ * KEPT, not archived: they are instruments, and instruments belong in the repo
+ * (CONTRIBUTING.md). The only debt was that they sat in the working API with
+ * no sign saying so - a reader could reasonably take them for part of the
+ * interface rather than a debugger's toolkit.
+ */
 int      touch_dbg_io(void);   /* last i2c error code from touch_poll */
 uint32_t touch_dbg_polls(void);
 uint32_t touch_dbg_int_low(void);

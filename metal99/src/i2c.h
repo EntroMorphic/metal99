@@ -37,6 +37,18 @@ void i2c_init(void);
 /* Raw INT_RAW and SR from the last transaction. Diagnostics, kept because they
  * are what located a missing SCLK_ACTIVE bit that made the whole bus look
  * empty - a symptom indistinguishable from "nothing is plugged in". */
+/*
+ * BRING-UP INSTRUMENTATION - currently called by nothing.
+ *
+ * These read counters and latched register state that were load-bearing while
+ * the four I2C register bugs in DESIGN.md 11.2 was being brought up, and are unreferenced today, so --gc-sections
+ * drops them and they cost the image nothing.
+ *
+ * KEPT, not archived: they are instruments, and instruments belong in the repo
+ * (CONTRIBUTING.md). The only debt was that they sat in the working API with
+ * no sign saying so - a reader could reasonably take them for part of the
+ * interface rather than a debugger's toolkit.
+ */
 uint32_t i2c_dbg_lines_before(void);  /* bit0 SCL, bit1 SDA; 3 = idle */
 uint32_t i2c_dbg_lines_after(void);
 uint32_t i2c_dbg_pulses(void);
