@@ -87,11 +87,20 @@ int main(void)
         if (APP.frame((uint32_t)f) != 0) bad_rc++;
 
         /*
-         * The app presents through vg_present() itself, so g_panel above is
-         * already the elided result. Presenting again here would send every
-         * lit row a second time and quietly double the row count - which it
-         * did, and the "elision actually elides" check caught it.
+         * Present the SAME frame again, through elision, into the panel model.
+         *
+         * gridvoid ships full-frame presents while the span-boundary leak is
+         * unexplained, so without this vg_present would go untested - and an
+         * untested present is how a regression waits. vg_finish is idempotent
+         * and the row walk is non-destructive, so this is genuinely the same
+         * frame, not a re-simulation of it.
+         *
+         * If the app is ever switched back to vg_present, DELETE THIS: it would
+         * send every lit row twice and double the row count. That is not
+         * hypothetical - it happened, and the row-count check caught it.
          */
+        vg_finish();
+        if (vg_present() != 0) bad_rc++;
         if (vg_count() > worst_segs) worst_segs = vg_count();
 
         /*

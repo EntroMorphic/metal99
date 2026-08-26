@@ -225,19 +225,35 @@ void spi2_flush_afifo(void)
      * Pulse the buffer AFIFO reset, then clear. DMA_TX_ENA stays off: this is
      * the FIFO path, and touching that bit would switch the data path.
      *
-     * THE READ-BACKS ARE THE POINT, not defensive habit. Two consecutive
-     * stores to this register are posted writes leaving the core back to back,
-     * so the reset was asserted for roughly one APB cycle - about 12.5 ns at
-     * 80 MHz APB. The AFIFO being reset is in the SPI clock domain, whose
-     * period is 25 ns at a 40 MHz bus. A pulse narrower than the clock edge
-     * meant to sample it is a pulse that can be missed entirely, and missing
-     * it looks exactly like not calling this function at all - which is what
-     * the panel has been showing.
+     * THE READ-BACKS ARE NOT THE FIX FOR THE SPAN DEBRIS. They were committed
+     * as one, on a single look at the panel that turned out to be a stale
+     * flash, and the debris is still there with them in. Correcting that here
+     * because a wrong root cause in a comment is worse than no root cause: it
+     * stops the next person looking.
      *
+     * They stay, on their own merit, which is narrow and real. Two back-to-back
+     * stores to this register are posted writes leaving the core one after the
+     * other, so the reset was asserted for roughly one APB cycle - about
+     * 12.5 ns at 80 MHz APB - against an AFIFO in the SPI clock domain whose
+     * period is 25 ns at a 40 MHz bus. A pulse narrower than the edge meant to
+     * sample it is a latent defect by inspection, whatever else is also wrong.
      * Reading the register back forces the posted write to complete before the
-     * next store issues, so the assertion is at least one full bus round trip
-     * wide. IDF never hit this because their bitfield write is a
-     * read-modify-write, which widens the pulse by accident.
+     * next store issues, so the assertion is a full bus round trip wide. IDF's
+     * equivalent is a read-modify-write, which is wide by accident.
+     *
+     * WHAT IS ACTUALLY KNOWN about the debris, after this:
+     *   - it scales with span count. gridvoid at 1 span/frame never shows it;
+     *     through elision at ~3 spans/frame it does, worse under touch.
+     *   - the transmit ledger cannot see it. It digests what we hand the
+     *     peripheral; this goes wrong downstream of that, which is why every
+     *     self-test passes while the glass disagrees.
+     *   - draining the AFIFO does not fix it, now genuinely tested rather than
+     *     assumed, because the drain now definitely happens.
+     * The last point is worth more than it looks: it retires the AFIFO as the
+     * suspect instead of leaving it plausible.
+     *
+     * The next honest step is not another guess. It is an instrument that can
+     * see the wire - the one thing this project has never had.
      */
     SPI_DMA_CONF = SPI_BUF_AFIFO_RST_BIT;
     (void)SPI_DMA_CONF;
