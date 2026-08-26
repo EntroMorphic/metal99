@@ -378,37 +378,24 @@ static int game_frame(uint32_t f)
 
     vg_finish();
     /*
-     * FULL FRAME, NOT vg_present(), AND THAT IS A RETREAT.
+     * TILE-GRANULAR PRESENT. Measured on this exact scene, on hardware:
      *
-     * Presenting through elision is correct - game_test proves the elided
-     * panel is pixel-identical to a full repaint across 6000 frames - but it
-     * turned one span per frame into ~3, and debris appeared on the glass
-     * after touch, which fragments the marked set further. spi2.h has said
-     * since the day it was written that the span-boundary leak "gets worse the
-     * more spans a frame contains". This app was the one workload that never
-     * hit it, because it always sent exactly one span. Now it does.
+     *     full repaint         24.5 ms   100%  of pixels,  1 span
+     *     vg_present (rows)    18.9 ms   88.7% of pixels,  1.6 spans
+     *     tile_present 8x8     15.5 ms   27.6% of pixels, 29 spans
+     *                          (20.9 ms worst over a 60 s soak)
      *
-     * A single-span mark (first lit row to last) would keep the boundary count
-     * at one, but the HUD sits at row 10 and the grid reaches row 447, so that
-     * covers 98% of the screen and saves nothing. For THIS scene, elision and
-     * one span are mutually exclusive.
-     *
-     * So the transport bug is what blocks it, not the marking. vg_present()
-     * stays, tested and correct, for scenes whose lit rows are actually
-     * clustered - and this line is the one to change back the day the leak is
-     * understood. Artifacts are worse than 21% of the rows.
-     */
-    /*
-     * TILE-GRANULAR PRESENT. Measured against the alternatives on this exact
-     * scene, on hardware:
-     *
-     *     full repaint            24.5 ms
-     *     vg_present (rows)       18.9 ms   88.7% of pixels, 1.6 spans
-     *     tile_present            13.6 ms   47.8% of pixels,  19 spans
-     *
-     * Spans got 12x more numerous and cost almost nothing: 11.8 us each,
+     * Spans got 29x more numerous and cost almost nothing: 11.8 us each,
      * measured by sending the same 448 rows split 1 to 64 ways
      * (apps/spancost.c). Pixels are what cost.
+     *
+     * AND THAT LAST LINE UNDOES A THEORY THIS FILE USED TO STATE. vg_present
+     * needed VG_MIN_RUN padding because short spans put debris on the glass -
+     * measured, reproducible, and fixed by making spans taller. tile_present
+     * runs 29 spans of EIGHT rows and is clean. Both were observed on this
+     * panel, and no account of the transport explains both. So the padding
+     * constants on the vg path encode a belief that is now known to be
+     * incomplete, and nobody should build on either one. See DESIGN.md 11.4.
      */
     return tile_present(vg_rowfn);
 }

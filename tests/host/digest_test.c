@@ -17,6 +17,11 @@
 #include <stdio.h>
 #include <string.h>
 #include "vec.h"
+/* This file is the host mirror of selftest.c's probe pattern, so it is
+ * entitled to the selftest-only primitives - and saying so with an include is
+ * the point: they clobber registers vec_hash16 uses on the hot path, and
+ * nothing outside a boot-time context may touch them. */
+#include "vec_selftest.h"
 #include "selftest.h"      /* PROBE_START / PROBE_STEP - one definition only */
 
 #define W           368

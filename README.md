@@ -15,10 +15,10 @@ LX7's 128-bit vector unit.
 | | |
 |---|---|
 | **Interface apps** | **60 Hz**, 1.9 ms frames, 8x headroom |
-| **Full-screen vector scenes** | **36 Hz**, 18.9 ms frames |
+| **Full-screen vector scenes** | **40 Hz**, 15.5 ms frames |
 | **Touch** | two contacts, tracking ids, press/drag/release/tap/long |
 | **Text** | TrueType-derived bitmap fonts, 1.375 instructions per pixel |
-| **Tests** | 101 assertions, no board required |
+| **Tests** | 105 assertions, no board required |
 
 ---
 
@@ -28,7 +28,7 @@ LX7's 128-bit vector unit.
 ./tools/flash.sh -c 20             # build, flash to 0x0, capture 20s of output
 APP=gridvoid ./tools/flash.sh      # pick which application ships
 ./tools/capture.py -r -s 15        # reset and watch the console
-make -C tests/host test            # 101 assertions + C99 conformance check
+make -C tests/host test            # 105 assertions + C99 conformance check
 make -C tests/host gamepng         # render the app to a PNG, no board required
 ```
 
@@ -74,7 +74,7 @@ Two front ends, and an app picks one:
 | | | |
 |---|---|---|
 | `gfx_*` | retained-mode runs, rects, text | returns `gfx_present()` |
-| `vg_*` | scanline vector lines | returns `vg_present()` |
+| `vg_*` | scanline vector lines | returns `tile_present(vg_rowfn)` |
 
 Events arrive before `frame()`. `ui_anchored_in()` is usually what a button
 wants: a press that began on one control and lifted on another activates
@@ -101,10 +101,11 @@ Four layers, each closing a measured cost:
 | **Elision** | present-time diff of the description against panel state |
 | **Sub-width spans** | a changed element costs its own area, not full rows |
 | **Cost-based coalescing** | adjacent rows merge when a union beats another span |
+| **Tile diffing** | a hash per 8x8 tile; only changed tiles are sent |
 
 An interface frame lands in **1.9 ms** against a 16.67 ms budget. A full-screen
-vector repaint is **22.2 ms** at 80 MHz; elision takes a typical game frame from
-24.5 ms to **18.9 ms**, with a fifth of the rows never leaving the chip.
+vector repaint is **22.2 ms** at 80 MHz; tile-granular elision takes a typical
+game frame to **15.5 ms**, transmitting **27.6%** of the pixels.
 
 Dirtiness is **derived, never declared**. Callers cannot forget to invalidate,
 because nothing asks them to.
@@ -133,6 +134,7 @@ because nothing asks them to.
 | `elide` | the diff against panel state |
 | `gfx` `font_share` | retained-mode layer and glyphs |
 | `vg` `trig` | scanline vector renderer, fixed-point trig |
+| `tile` | tile-granular present - detects change without storing a frame |
 | `i2c` `touch` `ui` | FT3168 and gesture recognition |
 | `selftest` | on-device verification, validated against injected faults |
 
@@ -171,7 +173,7 @@ across eight dummy-cycle counts and four reply paths, all silent. So the runtime
 verifies **what the hardware was actually told to send**.
 
 ```sh
-make -C tests/host test      # 101 assertions + clang C99 conformance check
+make -C tests/host test      # 105 assertions + clang C99 conformance check
 ```
 
 - **On-device self-test** compares transmitted bytes against an independently

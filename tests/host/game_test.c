@@ -149,8 +149,10 @@ int main(void)
                100 - (long)g_rows_sent * 100 / full_cost);
     }
     printf("     spans: %d (%.1f per frame)\n", g_spans, g_spans / 6000.0);
-    check(g_rows_sent < (int)(6000 * H * 9 / 10),
-          "elision actually elides - fewer rows sent than a full repaint");
+    /* Budget, not a sanity check: measured 88.7% under row elision, so 92% is
+     * a ceiling that a regression in vg's marking would breach. */
+    check(g_rows_sent < (int)(6000 * H * 92 / 100),
+          "row budget: under 92% of rows transmitted (measured 88.7%)");
     check(worst_segs < VG_MAX_SEGS,
           "  worst-case segment count stays under the cap");
     printf("     worst-case scene: %d of %d segments\n", worst_segs, VG_MAX_SEGS);

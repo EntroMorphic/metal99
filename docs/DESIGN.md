@@ -1743,6 +1743,37 @@ flickered on and off, and a coordinate label churned set/cleared every frame,
 costing 6,656 px a frame on an untouched screen. With gating restored,
 `lblfr` stays frozen while nothing is touching.
 
+### 11.3a What a span costs, measured (2026-08-26)
+
+Every decision about elision granularity turns on this and it had never been
+timed. DESIGN.md quoted "a window command plus a 20 byte preamble" - that is
+the BYTES. The TIME also covers two DCS commands with parameters, a CS cycle,
+and the register writes and UPDATE sync around them, which are CPU-bound.
+
+`apps/spancost.c` sends the same 448 rows split 1, 2, 4 ... 64 ways. Identical
+pixels, identical rendering, identical wire bytes; only the number of window
+setups changes.
+
+| spans | total | delta |
+|---|---|---|
+| 1 | 23,638 us | - |
+| 2 | 23,650 | +12 |
+| 4 | 23,673 | +35 |
+| 8 | 23,720 | +82 |
+| 16 | 23,815 | +177 |
+| 32 | 24,003 | +365 |
+| 64 | 24,380 | +742 |
+
+**11.8 us per span, dead linear.**
+
+This reverses a long-standing assumption. Elision has always minimised SPANS,
+on the grounds that each one carries real overhead - which is why elide would
+only coalesce rows with identical x-extents, and why the `gfx` label workaround
+existed. At 11.8 us, twenty extra spans cost 0.24 ms against frames measured in
+tens of milliseconds. **Spans are cheap. Pixels are expensive.** Tile-granular
+present trades 1.6 spans per frame for 29 and transmits a third of the pixels;
+that trade is only sane because this number is small, and nobody knew it was.
+
 ### 11.4 Span-boundary debris — CHARACTERISED AND SUPPRESSED
 
 Debris appeared at span boundaries for most of this project's life. It forced
@@ -1807,6 +1838,30 @@ Two apparent fixes along the way were regressions of our own making, and both
 were believed on a single look at the panel. That is the standing lesson: the
 panel is the least reliable instrument available, and a change must be
 validated on its own before anything is built on top of it.
+
+**AND THE MODEL IS NOW KNOWN TO BE INCOMPLETE (2026-08-26).** Tile-granular
+present runs **29 spans per frame of EIGHT rows each** on the same panel, and
+is clean on glass. That cannot be reconciled with "short spans cause debris",
+which is what the `vg` padding constants were derived from - and which was
+itself measured, reproducible, and fixed by making spans taller.
+
+Both observations stand. No account of the transport explains both. What is
+actually established is narrower than it looked:
+
+| established | not established |
+|---|---|
+| `vg_present` without padding produced debris | that span *height* is the variable |
+| padding and merging removed it | why they did |
+| tiles at 8 rows do not produce it | what distinguishes the two cases |
+
+Candidate distinctions, none tested: tile spans vary in WIDTH and are often
+narrow, where `vg` spans were always full width; tile spans within a band share
+one y-extent and differ only in x; tiles walk the panel top to bottom in fixed
+8-row steps. Any of these could matter, and guessing which is how this defect
+has repeatedly been mis-attributed.
+
+`vg_present` is on no shipping path, so the constants cost nothing today. They
+should not be treated as knowledge.
 
 **Still open:** the mechanism inside the panel. We know the trigger precisely
 and nothing about what the controller does with a short stranded window. The

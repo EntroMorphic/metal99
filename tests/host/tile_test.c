@@ -134,8 +134,23 @@ int main(void)
     printf("     tiles: %.1f%% of pixels, %.2f spans/frame\n",
            100.0 * (double)g_px_tile / ((double)FRAMES * W * H),
            (double)g_spans_tile / FRAMES);
-    check(g_px_tile < (long)FRAMES * W * H * 8 / 10,
-          "tiling actually elides - under 80% of pixels transmitted");
+    /*
+     * A REAL BUDGET, not a sanity check.
+     *
+     * "Under 80%" would pass for almost any behaviour, including elision that
+     * had quietly stopped working. The measured figure is 27.6% at 8x8; 35% is
+     * a ceiling with room for scene variation but not for a regression.
+     *
+     * This is the only automatic guard on transmitted pixels. Frame TIME is
+     * not asserted anywhere - the scalar hash that cost 8 ms a frame was caught
+     * by hand-instrumenting the device, and nothing in this suite would have
+     * noticed it. Cost that lives in the CPU rather than on the wire still
+     * needs a human with a stopwatch.
+     */
+    check(g_px_tile < (long)FRAMES * W * H * 35 / 100,
+          "pixel budget: under 35% transmitted (measured 27.6%)");
+    check(g_spans_tile < (long)FRAMES * 40,
+          "span budget: under 40 per frame (measured 29)");
 
     printf("%s (%d failure%s)\n", g_fails ? "FAILED" : "OK",
            g_fails, g_fails == 1 ? "" : "s");

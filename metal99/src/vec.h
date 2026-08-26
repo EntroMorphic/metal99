@@ -73,9 +73,10 @@
  * before any application starts, and hashing happens inside tile_present in the
  * frame loop. They cannot interleave because they cannot both be running.
  *
- * If a vec_ramp16 or vec_xor16 caller ever appears outside selftest, this stops
- * being true and the hash needs its own registers. There are none free, so it
- * would need a different construction.
+ * That proof is now ENFORCED rather than asserted: vec_ramp16 and vec_xor16
+ * are declared in vec_selftest.h, which only selftest.c includes, so a caller
+ * appearing outside it does not compile. Previously the only thing preventing
+ * silent mid-frame corruption of the hash was this paragraph.
  */
 #define VEC_Q_HACC   VEC_Q_RAMP   /* q4  hash accumulator, 8 lanes   */
 #define VEC_Q_HDAT   VEC_Q_STEP   /* q5  chunk being folded in       */
@@ -112,19 +113,13 @@ void vec_copy(void *dst, const void *src, uint32_t vectors);
 void vec_zero(void *dst, uint32_t vectors);
 
 /*
- * dst[i] = start + i*step, i in units of 16-bit lanes, with no scalar
- * per-element work.
- *
- * SATURATES. The accumulate is ee.vadds.s16, a signed saturating add, so once
- * start + i*step passes 32767 every remaining lane pins to 0x7FFF and the ramp
- * stops being a ramp. Callers wanting a positionally unique pattern must keep
- * start + (n-1)*step within int16 - selftest.c enforces that with a static
- * assertion after its probe pattern silently went flat across 72% of each row.
+ * vec_ramp16 and vec_xor16 are NOT declared here. They own q4/q5 and q6/q7,
+ * which vec_hash16 shares, and that sharing holds only because they run once
+ * at boot from the self-test. Calling either from an application would clobber
+ * the hash multiplier mid-frame and put stale tiles on the glass with no error
+ * and no failing test. They live in vec_selftest.h so that misuse is a compile
+ * error rather than a comment nobody read.
  */
-void vec_ramp16(uint16_t *dst, uint16_t start, uint16_t step, uint32_t vectors);
-
-/* dst ^= src, 16-bit lanes. */
-void vec_xor16(uint16_t *dst, const uint16_t *src, uint32_t vectors);
 
 /*
  * GLYPH BLIT - 1bpp bits to RGB565 pixels, 8 per instruction group.

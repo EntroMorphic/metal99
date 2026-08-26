@@ -2,6 +2,7 @@
 #include "selftest.h"
 #include "io.h"
 #include "vec.h"
+#include "vec_selftest.h"
 #include "spi2.h"
 #include "sh8601.h"
 
@@ -187,16 +188,24 @@ static int selftest_hash(void)
         0x8F404870u, 0x93503490u, 0x9D80C510u, 0x35D06590u,
         0x6C40B9B0u, 0x45E08CF0u, 0x1FE05B10u, 0x75A0EAD0u
     };
-    static uint16_t VEC_ALIGN pat[16 * SH8601_WIDTH];
+    /*
+     * CONTIGUOUS, not panel-width strided. The first version allocated
+     * 16 x 368 pixels - 11.5 KB of BSS, live for the whole run - to exercise a
+     * function that only READS 8 pixels per row. The stride is a parameter;
+     * testing the instruction path does not require the production value, and
+     * a boot-time check has no business holding 11.5 KB forever.
+     *
+     * 16 vectors, 16-byte stride, 256 bytes.
+     */
+    static uint16_t VEC_ALIGN pat[16 * 8];
     static uint32_t VEC_ALIGN got[8];
     int r, x, i, bad = 0;
 
     for (r = 0; r < 16; r++)
-        for (x = 0; x < SH8601_WIDTH; x++)
-            pat[r * SH8601_WIDTH + x] =
-                (uint16_t)(0x1234u + (uint16_t)(r * 31 + x * 7));
+        for (x = 0; x < 8; x++)
+            pat[r * 8 + x] = (uint16_t)(0x1234u + (uint16_t)(r * 31 + x * 7));
 
-    vec_hash16(&pat[0], 16u, (uint32_t)(SH8601_WIDTH * 2), got);
+    vec_hash16(&pat[0], 16u, 16u, got);
 
     for (i = 0; i < 8; i++) if (got[i] != GOLDEN[i]) bad++;
 
