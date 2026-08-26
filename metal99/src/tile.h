@@ -59,7 +59,7 @@
  * anything that misbehaved.
  */
 #define TILE_W 8
-#define TILE_H 16
+#define TILE_H 8
 
 /*
  * Rolling resync: one tile ROW is retransmitted unconditionally each frame, so

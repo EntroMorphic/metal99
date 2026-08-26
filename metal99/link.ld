@@ -6,23 +6,27 @@
  * We keep well below 0x3FCE9700, which the ROM uses for its own stack. */
 ENTRY(_start)
 
-/* THESE ARE CHOICES, NOT LIMITS.
+/* RIGHT-SIZED, 2026-08-26, because something finally needed the room.
  *
- * The chip has 480 KB of DRAM-addressable SRAM. We claim 192 KB of it and use
- * about 96; IRAM claims 128 KB for under 11 KB of code. Both are deliberately
- * generous and deliberately unchanged - the map is verified working, and there
- * is no reason to move a working memory map.
+ * IRAM claimed 128 KB to hold 14 KB of code, and because SRAM1 is dual-mapped
+ * that claim came straight out of DRAM. This note used to say the map was
+ * "deliberately unchanged - there is no reason to move a working memory map",
+ * which was true right up until tile-granular elision at 8-row tiles wanted
+ * 86 KB of band and hashes and the linker refused it by 13,984 bytes.
  *
- * Stated because "322 KB will not fit in 192 KB of DRAM" was repeated for a
- * while as the reason this project has no framebuffer. It is false: right-
- * sizing IRAM would leave ~373 KB below the ROM stack floor, and a 322 KB
- * framebuffer fits with room over. The real reason is that the panel is
- * wire-bound and storing pixels does not send fewer of them. See
- * docs/DESIGN.md 5.1 for the arithmetic. */
+ * IRAM is 32 KB now: 2.2x headroom over .text, and the whole of the rest goes
+ * to DRAM. 320 KB claimed, ~205 KB used, and the region still stops 38 KB
+ * short of 0x3FCE9700 where the ROM stack lives - we run on that stack, so
+ * that clearance is not optional.
+ *
+ * The old note also recorded that "322 KB will not fit in 192 KB of DRAM" was
+ * once given as the reason this project has no framebuffer, and that it was
+ * false. It stays false, and it is now moot: tile hashing detects change in
+ * 86 KB without storing a frame at all. See docs/DESIGN.md and tile.h. */
 MEMORY
 {
-  iram (RWX) : ORIGIN = 0x40378000, LENGTH = 0x20000   /* 128K claimed, ~11K used  */
-  dram (RW)  : ORIGIN = 0x3FCA8000, LENGTH = 0x30000   /* 192K claimed, ~96K used  */
+  iram (RWX) : ORIGIN = 0x40378000, LENGTH = 0x8000    /* 32K claimed,  ~14K used  */
+  dram (RW)  : ORIGIN = 0x3FC90000, LENGTH = 0x50000   /* 320K claimed, ~205K used */
 }
 
 SECTIONS
