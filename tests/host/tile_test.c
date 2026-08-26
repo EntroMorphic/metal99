@@ -68,7 +68,11 @@ int main(void)
     int first_bad_f = -1, first_bad_x = -1, first_bad_y = -1;
 
     printf("tile_test: %dx%d tiles, %d frames of gridvoid\n", TILE_W, TILE_H, FRAMES);
-    tile_init();
+    /*
+     * NO tile_init() HERE, deliberately. tile_present must be correct whether
+     * or not a caller remembers to initialise it - gridvoid does not call it
+     * at all any more - and the only way to know that is to not call it.
+     */
     /*
      * RESYNC OFF. gfx_test does the same to elide, and the reason is the same:
      * with the rotating rewrite enabled, a tile the hash failed to notice is

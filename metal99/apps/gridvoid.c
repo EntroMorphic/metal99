@@ -56,7 +56,6 @@ static int32_t g_scroll;     /* how far the grid has flowed toward us     */
 typedef struct { int32_t x, y, z; int alive, spin; } foe;
 static foe      g_foe[MAX_FOE];
 static int      g_score, g_lives, g_wave, g_combo;
-static int      g_tiles_ready;
 static int      g_tracer, g_tx, g_ty;      /* live tracer, and where it went */
 static uint32_t g_seed = 0x1234567u;
 static int      g_spawn;
@@ -217,14 +216,6 @@ static void game_init(void)
 {
     int i;
     g_scroll = 0;
-    /*
-     * ONCE, not on every restart. game_init() is also called on death, and
-     * tile_init() forces a full repaint - but the stored hashes still describe
-     * what the panel holds accurately, so ordinary hashing detects the new
-     * scene by itself. Resetting cost a ~30 ms frame on every death, which is
-     * where the late counter was coming from.
-     */
-    if (!g_tiles_ready) { tile_init(); g_tiles_ready = 1; }
     C_GRID = sh8601_rgb565(0, 110, 170);
     C_HOT  = sh8601_rgb565(90, 230, 255);
     for (i = 0; i < MAX_FOE; i++) g_foe[i].alive = 0;

@@ -88,11 +88,22 @@ const tile_stats *tile_last(void)     { return &g_stats; }
  */
 static int g_force;
 
+/*
+ * Has the panel state ever been established? tile_present must be correct
+ * whether or not the caller remembered tile_init(): without this, the stored
+ * hashes start as zeros, which is a REACHABLE hash, so a tile that happens to
+ * match would be declared clean and never painted on the very first frame -
+ * and stay wrong until the resync swept it. Same class of defect as the
+ * poisoned-sentinel version of tile_reset, which is why it is a flag again.
+ */
+static int g_inited;
+
 void tile_reset(void) { g_force = 1; }
 
 void tile_init(void)
 {
     int r, c;
+    g_inited = 1;
     for (r = 0; r < TROWS; r++)
         for (c = 0; c < TCOLS; c++) {
             int k;
@@ -127,6 +138,7 @@ int tile_present(void (*rowfn)(uint16_t *row, int y))
     int resync_row = -1;
 
     if (rowfn == NULL) return SPI2_E_NULL;
+    if (!g_inited) { tile_init(); }
 
     g_stats.tiles_dirty = 0u;
     g_stats.tiles_total = 0u;

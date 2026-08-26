@@ -53,8 +53,16 @@ typedef struct {
      * panel holds are the wrong tools for a scene where everything moves.
      *
      * An interface app calls gfx_* and returns gfx_present(). A vector app
-     * calls vg_* and returns sh8601_write_frame(vg_rowfn). main.c paces and
+     * calls vg_* and returns tile_present(vg_rowfn). main.c paces and
      * measures; what reaches the glass is the app's business.
+     */
+    /*
+     * ON FAILURE, LEAVE YOURSELF DIRTY. main.c reports the error and retries
+     * the next frame; it does not and cannot repair the presenter's model,
+     * because it does not know which one was used. A path that advances its
+     * idea of what the panel holds after a transfer that did not complete has
+     * lost the update permanently - which is the exact drift every layer here
+     * exists to prevent.
      */
     int (*frame)(uint32_t f);
 

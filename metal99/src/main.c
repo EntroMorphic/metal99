@@ -206,8 +206,20 @@ void app_entry(void)
         if (trc == TOUCH_OK) ui_poll(APP.event);
         rc = APP.frame ? APP.frame(f) : 0;
         if (rc != SPI2_OK) {
+            /*
+             * NO gfx_invalidate() HERE. main.c does not know which present
+             * path the app used - gfx_present, vg_present or tile_present -
+             * and reaching into one of them on behalf of all three was a
+             * layering violation that happened to be harmless.
+             *
+             * Recovery is the presenter's own job, and each does it: elide
+             * leaves failed rows dirty and gfx does not advance g_sent, so the
+             * next attempt retries them; tile_present forces a full repaint
+             * because its hashes no longer describe the panel. A present path
+             * MUST leave itself dirty on failure - see app.h.
+             */
             con_puts("  frame FAILED rc="); con_dec((int32_t)rc); con_puts("\r\n");
-            gfx_invalidate(); delay_ms(500u); continue;
+            delay_ms(500u); continue;
         }
         /* Measured here rather than read from elide: an app that streams rows
          * straight to the panel never touches elide, and reporting its stale

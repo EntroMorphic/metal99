@@ -117,6 +117,22 @@ void tile_set_resync(uint32_t frames);
  * `rowfn` is called for EVERY row, in increasing order, exactly once per
  * frame - which is what vg_rowfn's forward-only active-edge walk requires.
  * Returns SPI2_OK or the transport's error.
+ *
+ * ROWFN MUST WRITE EVERY PIXEL OF THE ROW, and this is stricter than what
+ * sh8601_write_frame demands of the same function.
+ *
+ * The band is reused for every tile row, so any pixel a rowfn leaves untouched
+ * still holds the PREVIOUS band's content. Under sh8601_write_frame that is
+ * merely a wrong pixel - visible, and obviously wrong. Here it is folded into
+ * the tile's HASH, so the tile is declared changed or unchanged for reasons
+ * unrelated to what it contains: stale tiles are never sent, and the display
+ * quietly diverges from the model with nothing reporting an error.
+ *
+ * vg_rowfn satisfies this - it lays the background down with vec_fill16 before
+ * drawing spans. gfx_rowfn paints only the runs its model holds and relies on
+ * those tiling the full width, which is an invariant of gfx rather than a
+ * property of the function. Anything else must be checked before being handed
+ * to this path.
  */
 int tile_present(void (*rowfn)(uint16_t *row, int y));
 
