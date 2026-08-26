@@ -77,10 +77,9 @@
  * being true and the hash needs its own registers. There are none free, so it
  * would need a different construction.
  */
-#define VEC_Q_HACC   VEC_Q_RAMP   /* q4  accumulator A, 8 lanes      */
+#define VEC_Q_HACC   VEC_Q_RAMP   /* q4  hash accumulator, 8 lanes   */
 #define VEC_Q_HDAT   VEC_Q_STEP   /* q5  chunk being folded in       */
 #define VEC_Q_HK     VEC_Q_XORD   /* q6  the odd multiplier          */
-#define VEC_Q_HACC2  VEC_Q_XORS   /* q7  accumulator B               */
 
 #define VEC_Q_GBITS  VEC_Q_FILL   /* q0  broadcast glyph byte        */
 #define VEC_Q_GLANE  VEC_Q_COPY   /* q1  {0x80,0x40,...,0x01}        */
@@ -204,14 +203,22 @@ uint32_t vec_fold_get(void);
  * collision, not a logic error. Widening from 32 to 128 bits did not help,
  * because the missing entropy was per-lane.
  *
- * So each lane now runs two different functions over the same data:
+ * So the tile is walked TWICE, with two different multipliers, and both
+ * results are kept - eight words in all.
  *
- *     A:  acc = (acc ^ data) * K      FNV-1a order
- *     B:  acc = (acc * K) ^ data      FNV-1 order
+ * An attempt to get the same effect in one pass, with two accumulators running
+ * FNV-1a and FNV-1 order, does NOT work, and the reason is worth keeping
+ * because it looked convincing:
  *
- * Two functions, one constant - which matters because there is no ninth vector
- * register to hold a second one. Colliding in both at once is ~2^-32 per
- * comparison, and a missed collision is a stale tile that is never sent.
+ *     A: a = (a ^ d) * K        B: b = (b * K) ^ d
+ *
+ * Write out the recurrences and a_n = K * b_n exactly, for all n. They are the
+ * same function scaled by K, so B carried no information whatsoever. The
+ * equivalence test kept failing for one multiplier and passing for others,
+ * which is what a collision looks like and a coding error does not.
+ *
+ * Two real passes cost one extra walk, about 1 ms a frame, and are independent
+ * for real - verified across four constant pairs that previously failed.
  */
 void vec_hash16(const void *p, uint32_t vectors, uint32_t stride_bytes,
                 uint32_t out[8]);

@@ -14,12 +14,15 @@
 
 /* The band: one tile-row of pixels, 16-byte aligned so a span starting on any
  * tile boundary is a legal FIFO source (spi2.h alignment contract). */
-static uint16_t VEC_ALIGN g_band[TILE_H * W];
-static int      g_band_y0;                  /* panel row of g_band[0]        */
+/* Named g_tileband, not g_band: sh8601.c already has a g_band - its 46 KB DMA
+ * staging buffer - and two file-static arrays sharing a name in one project is
+ * a trap for whoever reads a linker map next. */
+static uint16_t VEC_ALIGN g_tileband[TILE_H * W];
+static int      g_tileband_y0;                  /* panel row of g_tileband[0]        */
 
 static uint32_t g_hash[TROWS][TCOLS][8];    /* what the panel holds          */
 static uint8_t  g_dirty[TCOLS];             /* this band only                */
-static uint32_t g_resync = TILE_RESYNC_FRAMES;
+static uint32_t g_resync = TILE_RESYNC_ON;
 static uint32_t g_frames;
 static tile_stats g_stats;
 
@@ -41,12 +44,29 @@ static tile_stats g_stats;
  */
 typedef char tile_w_is_one_vector[(TILE_W * 2 == VEC_BYTES) ? 1 : -1];
 
+/*
+ * THE PANEL MUST DIVIDE EVENLY INTO TILES. Both of these hold today (368/8,
+ * 448/16) and neither is checked anywhere else, so they are landmines rather
+ * than bugs - which is exactly the kind this file should not be allowed to
+ * grow.
+ *
+ * A partial band would leave the tail of g_band holding the PREVIOUS band's
+ * rows, and tile_hash always folds TILE_H of them: the hash would depend on
+ * stale pixels, and tiles would be called clean or dirty for reasons that have
+ * nothing to do with their contents. A partial column would read past the end
+ * of a row into the next one. Neither failure is visible in the timing or the
+ * stats; both would show up as debris, and debris in this project has a
+ * history of being blamed on the transport.
+ */
+typedef char tile_h_divides_panel[(H % TILE_H == 0) ? 1 : -1];
+typedef char tile_w_divides_panel[(W % TILE_W == 0) ? 1 : -1];
+
 /* 16-byte aligned: vec_hash16 stores the accumulator with a vector store. */
 static uint32_t VEC_ALIGN g_h[8];
 
 static void tile_hash(int tcol)
 {
-    vec_hash16(&g_band[(size_t)tcol * TILE_W],
+    vec_hash16(&g_tileband[(size_t)tcol * TILE_W],
                (uint32_t)TILE_H, (uint32_t)(W * 2), g_h);
 }
 
@@ -83,11 +103,21 @@ void tile_init(void)
 }
 
 /* Serves rows out of the band. sh8601 asks for absolute panel rows. */
+/*
+ * Serves rows out of the band. sh8601 asks for absolute panel rows.
+ *
+ * The bounds check cannot fire: every span this file issues lies inside the
+ * band that was just rendered. It is here because the alternative to returning
+ * is transmitting whatever the caller's buffer happened to hold, and a silent
+ * wrong-pixels failure is the worst kind this project has had. If it ever does
+ * fire the frame is visibly wrong rather than subtly wrong, which is the
+ * better of the two.
+ */
 static void band_rowfn(uint16_t *row, int y)
 {
-    int r = y - g_band_y0;
-    if (r < 0 || r >= TILE_H) return;   /* asking is not enforcing */
-    vec_copy(row, &g_band[(size_t)r * W], (uint32_t)(W * 2 / VEC_BYTES));
+    int r = y - g_tileband_y0;
+    if (r < 0 || r >= TILE_H) { vec_zero(row, (uint32_t)(W * 2 / VEC_BYTES)); return; }
+    vec_copy(row, &g_tileband[(size_t)r * W], (uint32_t)(W * 2 / VEC_BYTES));
 }
 
 int tile_present(void (*rowfn)(uint16_t *row, int y))
@@ -120,10 +150,10 @@ int tile_present(void (*rowfn)(uint16_t *row, int y))
 
         /* Render the band. Every row, every frame - that is the trade this
          * path makes, and tile.h says so out loud. */
+        g_tileband_y0 = y0;          /* before anything can read the band */
         t_mark = cpu_cycles();
-        for (r = y0; r <= y1; r++) rowfn(&g_band[(size_t)(r - y0) * W], r);
+        for (r = y0; r <= y1; r++) rowfn(&g_tileband[(size_t)(r - y0) * W], r);
         g_stats.render_cycles += cpu_cycles() - t_mark;
-        g_band_y0 = y0;
 
         t_mark = cpu_cycles();
         for (c = 0; c < TCOLS; c++) {
@@ -161,10 +191,16 @@ int tile_present(void (*rowfn)(uint16_t *row, int y))
                                          band_rowfn);
                 g_stats.flush_cycles += cpu_cycles() - t_mark;
                 if (rc != SPI2_OK) {
-                    /* Leave the run's hashes wrong so the next frame retries
-                     * it, exactly as elide leaves failed rows dirty. */
-                    /* Leave the whole frame dirty so the next present retries,
-                     * as elide leaves failed rows dirty. */
+                    /*
+                     * Every hash up to here has already been updated to match
+                     * what we INTENDED to send, and some of it did not go out.
+                     * The stored hashes are therefore a lie about the panel,
+                     * and no partial repair is trustworthy - so force the next
+                     * present to repaint everything, which is the one recovery
+                     * that cannot be subtly wrong. elide does the narrower
+                     * thing (leave failed rows dirty) because it can: its
+                     * model is per-row and it knows exactly which rows failed.
+                     */
                     g_force = 1;
                     return rc;
                 }

@@ -165,6 +165,49 @@ static int selftest_glyph(void)
     return 1;
 }
 
+/*
+ * THE HOST MIRROR MUST AGREE WITH THE DEVICE.
+ *
+ * tests/host reimplements vec_hash16 in scalar C so tile_test can run without
+ * hardware. That whole strategy rests on the two producing identical values -
+ * if they drift, the host tests keep passing while the device makes different
+ * decisions about which tiles changed, and the failure appears as debris with
+ * a clean test suite pointing the other way.
+ *
+ * So: a fixed pattern, and the eight words the HOST computes for it, checked
+ * here. If the PIE implementation is edited and the mirror is not - or the
+ * constants diverge, or an instruction turns out to mean something other than
+ * assumed - this fails on the device at boot rather than silently months later.
+ *
+ * Regenerate by running the pattern through tests/host's vec_hash16.
+ */
+static int selftest_hash(void)
+{
+    static const uint32_t GOLDEN[8] = {
+        0x8F404870u, 0x93503490u, 0x9D80C510u, 0x35D06590u,
+        0x6C40B9B0u, 0x45E08CF0u, 0x1FE05B10u, 0x75A0EAD0u
+    };
+    static uint16_t VEC_ALIGN pat[16 * SH8601_WIDTH];
+    static uint32_t VEC_ALIGN got[8];
+    int r, x, i, bad = 0;
+
+    for (r = 0; r < 16; r++)
+        for (x = 0; x < SH8601_WIDTH; x++)
+            pat[r * SH8601_WIDTH + x] =
+                (uint16_t)(0x1234u + (uint16_t)(r * 31 + x * 7));
+
+    vec_hash16(&pat[0], 16u, (uint32_t)(SH8601_WIDTH * 2), got);
+
+    for (i = 0; i < 8; i++) if (got[i] != GOLDEN[i]) bad++;
+
+    con_puts("self-test: HASH vs host mirror  ");
+    if (bad == 0) { con_puts("PASS\r\n"); return 0; }
+    con_puts("FAIL  got ");
+    for (i = 0; i < 8; i++) { con_hex32(got[i]); con_puts(" "); }
+    con_puts("\r\n");
+    return 1;
+}
+
 int selftest_transport(void)
 {
     /*
@@ -183,6 +226,9 @@ int selftest_transport(void)
      * reintroduce a nested scope that redeclares this.
      */
     int fails = 0;
+
+    /* Cheap, and it gates everything the host tests claim about tiling. */
+    fails += selftest_hash();
     int rc, k, tr;
     static const int cases[6] = { 1, 4, 32, 33, 100, 448 };
 

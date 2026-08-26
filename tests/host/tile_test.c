@@ -69,6 +69,15 @@ int main(void)
 
     printf("tile_test: %dx%d tiles, %d frames of gridvoid\n", TILE_W, TILE_H, FRAMES);
     tile_init();
+    /*
+     * RESYNC OFF. gfx_test does the same to elide, and the reason is the same:
+     * with the rotating rewrite enabled, a tile the hash failed to notice is
+     * repaired within TROWS frames, so the tracking can be wrong and the
+     * picture still look right most of the time. Off, every miss is permanent
+     * and the comparison below is a real test of the hashing rather than of
+     * how often it gets scrubbed.
+     */
+    tile_set_resync(0u);
     APP.init();
 
     for (f = 0; f < FRAMES; f++) {
