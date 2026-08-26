@@ -1,7 +1,25 @@
 # archive
 
-**Nothing here is dead.** These are superseded stages kept for reference, and
-both are still load-bearing as documentation.
+**Nothing here is dead.** These are superseded stages and retired code, kept
+for reference, and still load-bearing as documentation.
+
+## `retired/`
+
+Code removed from the shipping tree, with the measurement that removed it. The
+rule is that nothing leaves this project by deletion: a function that was
+written, tested and then displaced is a recorded result, and the reason it went
+is usually worth more than the code.
+
+| | |
+|---|---|
+| `sh8601_scroll.c` | MIPI DCS `0x33`/`0x37` panel-side scroll. Correct code; the panel does not implement it. Tested - the bars did not move. |
+| `vg_present.c` | Row-granular elision for vector scenes. Correct and proven pixel-identical over 6000 frames; superseded by `tile_present`, which sends 27.6% of pixels where this sent 88.7%. |
+
+`vg_present.c` also carries the two tuning constants `VG_MIN_RUN` and
+`VG_MERGE_GAP`, which are the live open question in this project: they were
+derived from the belief that short spans cause debris, they demonstrably fixed
+it, and `tile_present` then ran 29 spans of eight rows on the same panel with
+no debris at all. Both results stand. See `docs/DESIGN.md` 11.4.
 
 ## `lvgl_demo_sh8601/`
 

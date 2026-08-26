@@ -40,7 +40,6 @@ int sh8601_write_frame(void (*rowfn)(uint16_t *row, int y))
  * elides - a present that quietly sent all 448 every frame would otherwise
  * pass every test in this file. */
 static int g_rows_sent;
-static int g_record = 1;   /* only count the present WE drive */
 static int g_spans;
 static uint16_t g_panel[H][W];   /* what the glass holds, retained like glass */
 static uint8_t  g_sent_row[H];   /* was this row transmitted THIS frame?      */
@@ -48,7 +47,6 @@ int sh8601_write_span_x(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1,
                         void (*rowfn)(uint16_t *, int))
 {
     int y;
-    if (!g_record) return 0;
     g_spans++;
     for (y = y0; y <= (int)y1; y++) {
         int x;
@@ -68,7 +66,7 @@ uint32_t cpu_cycles(void) { return (g_cyc += 1000u); }
 
 int main(void)
 {
-    int f, worst_segs = 0, bad_rc = 0, lit_frames = 0, stale = 0;
+    int f, worst_segs = 0, bad_rc = 0, lit_frames = 0;
     uint32_t seed = 12345u;
 
     printf("game_test: gridvoid soak\n");
@@ -86,54 +84,20 @@ int main(void)
             if (APP.event) APP.event(&e);
         }
         { int q; for (q = 0; q < H; q++) g_sent_row[q] = 0; }
-        /* The app presents through tile_present now; tile_test covers that.
-         * Ignore its output here so this file keeps measuring vg_present. */
-        g_record = 0;
         if (APP.frame((uint32_t)f) != 0) bad_rc++;
 
         /*
-         * Now present the SAME frame through vg_present, into the panel model.
-         * The app no longer uses this path - it presents through tiles - so
-         * without this vg_present would go untested, and an untested present
-         * is how a regression waits.
+         * The app presents through tile_present, and tile_test owns the
+         * question of whether elision is exact. This file is the GAMEPLAY
+         * soak: 6000 frames of real input, under the sanitiser, checking that
+         * the scene stays inside the segment budget and never comes out empty.
          *
-         * If gridvoid ever moves back to vg_present, DELETE THIS: it would
-         * send every lit row twice and double the row count. That is not
-         * hypothetical; it has happened twice in this file's history.
+         * It used to also drive vg_present here, back when that was a second
+         * present path worth testing. It was archived (archive/retired/) once
+         * tile_present measured strictly better and no app called it.
          */
-        g_record = 1;
-        vg_finish();
-        if (vg_present() != 0) bad_rc++;
 
         if (vg_count() > worst_segs) worst_segs = vg_count();
-
-        /*
-         * THE PROPERTY ELISION HAS TO HOLD: the panel, after being sent only
-         * the rows vg asked for, must be pixel-identical to a panel that was
-         * sent every row. Anything vg fails to mark shows up here as a stale
-         * pixel that a full repaint would have overwritten - which on glass is
-         * exactly the "artifact" this project has chased into the transport
-         * more than once.
-         *
-         * vg_finish() re-buckets the segments the app just submitted without
-         * disturbing them, so the full render below is the SAME frame, not an
-         * approximation of it.
-         */
-        {
-            static uint16_t full[H][W];
-            int y, x;
-            vg_finish();
-            for (y = 0; y < H; y++) vg_rowfn(full[y], y);
-            for (y = 0; y < H && !stale; y++)
-                for (x = 0; x < W; x++)
-                    if (full[y][x] != g_panel[y][x]) {
-                        stale = 1;
-                        printf("     stale pixel at (%d,%d) frame %d: "
-                               "panel=0x%04X full=0x%04X  row_sent=%d\n",
-                               x, y, f, g_panel[y][x], full[y][x], g_sent_row[y]);
-                        break;
-                    }
-        }
         if (vg_count() > 0) lit_frames++;
     }
 
@@ -141,18 +105,12 @@ int main(void)
     check(g_rows_sent > 0, "the app transmitted rows");
     check(lit_frames == 6000, "no frame came out empty");
     check(vg_overflow() == 0u, "the scene never exceeded the segment budget");
-    check(!stale, "elided panel is pixel-identical to a full repaint");
-    {
-        long full_cost = (long)6000 * H;
-        printf("     rows transmitted: %d of %ld (%ld%% elided)\n",
-               g_rows_sent, full_cost,
-               100 - (long)g_rows_sent * 100 / full_cost);
-    }
-    printf("     spans: %d (%.1f per frame)\n", g_spans, g_spans / 6000.0);
+    printf("     rows touched by the transport: %d over %d frames\n",
+           g_rows_sent, 6000);
     /* Budget, not a sanity check: measured 88.7% under row elision, so 92% is
      * a ceiling that a regression in vg's marking would breach. */
-    check(g_rows_sent < (int)(6000 * H * 92 / 100),
-          "row budget: under 92% of rows transmitted (measured 88.7%)");
+    /* Tiles, not rows, and tile_test holds the pixel budget. What matters
+     * here is only that the app actually drove the panel. */
     check(worst_segs < VG_MAX_SEGS,
           "  worst-case segment count stays under the cap");
     printf("     worst-case scene: %d of %d segments\n", worst_segs, VG_MAX_SEGS);
