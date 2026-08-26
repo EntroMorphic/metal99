@@ -60,9 +60,33 @@ Before claiming a change works:
 2. `./tools/flash.sh -c 20` and read the self-test result
 3. If you touched a transport, confirm the **fault injection** still reports
    `DETECTED` — a verifier that always passes is worthless
-4. If the change is visual, look at the panel. The ledger checks what was
-   *sent*, not what was *displayed*, and that gap is not academic: banded DMA
-   passes the ledger and still looks wrong.
+4. If the change is visual, render it: `make -C tests/host png` or `gamepng`
+   links the real layers and writes a PNG you can inspect pixel by pixel.
+5. Then look at the panel. The ledger checks what was *sent*, not what was
+   *displayed*, and that gap is not academic: banded DMA passes the ledger and
+   still looks wrong.
+
+### One change at a time, validated before anything is built on it
+
+The panel is the least reliable instrument available — it cannot be read back
+(§2.1a), so a clean screen and a stale flash are indistinguishable, and so are
+correct output and a wedged panel showing the last good frame.
+
+Two consequences, both learned expensively:
+
+- **Never accept a single observation as proof of a root cause.** Flip the
+  suspect on and off inside ONE build, on identical content, and require the
+  symptom to track it. Comparing two flashes from memory has produced a
+  confident, wrong conclusion here more than once.
+- **A change kept "because it is correct anyway" still has to be validated on
+  its own.** A pulse-width fix was reasoned sound by inspection, shipped
+  unvalidated alongside other work, and then caused a regression that took four
+  rounds of bisection to find — while the search kept blaming the feature it
+  had shipped beside.
+
+An A/B harness is cheap. `apps/spanlab.c` and `apps/uilab.c` are the pattern:
+static content, one variable, an on-screen indicator saying which phase is
+live, and a detector region that has no legitimate reason to ever change.
 
 ## Instruments belong in the repo
 

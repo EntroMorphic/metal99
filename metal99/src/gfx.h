@@ -198,6 +198,18 @@ int gfx_present(void);
 /* Force a full repaint next present - the escape hatch for model drift. */
 void gfx_invalidate(void);
 
+/*
+ * DIAGNOSTIC: force label rows to mark FULL WIDTH, as they did while the
+ * span-boundary debris was unexplained.
+ *
+ * Exists so the workaround can be A/B'd against its replacement inside ONE
+ * build, on identical content, instead of comparing two flashes from memory -
+ * which has produced a wrong conclusion in this project more than once. Off by
+ * default; labels mark their own columns and elide unions extents when that is
+ * cheaper than another span.
+ */
+void gfx_dbg_label_full(int on);
+
 const gfx_stats *gfx_last(void);
 
 #endif /* GFX_H */

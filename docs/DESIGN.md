@@ -54,6 +54,35 @@ bring-up. Nothing here is quoted from a datasheet unless marked.
 | MAC | `30:ed:a0:ac:91:54` | esptool |
 | Console | **USB-Serial-JTAG only — no UART bridge** | `lsusb` VID:PID `303a:1001` |
 
+### 2.1a Two premises, finally measured (2026-08-25)
+
+Both had been repeated in headers and docs for months without a record of
+anyone testing them. Both are now measured, and one of them is not what we
+assumed.
+
+**The panel cannot be read back — TRUE.** `apps/readprobe.c` sweeps seven DCS
+read commands (`0x04` RDDID, `0x09` RDDST, `0x0A` RDDPM, `0x0C`, `0xDA`-`0xDC`)
+against eight dummy-cycle counts, across four reply paths: D1/FSPIQ 1-line, D0
+true half-duplex, and quad reads on each. **224 combinations, all silent.** The
+W registers are zeroed before each read, so a panel that answers nothing cannot
+hand back the previous transfer and look convincing. This is why the transmit
+ledger exists and why any real transport instrument has to watch the wire from
+outside.
+
+**No TE pin is routed — TRUE.** Waveshare's BSP header defines CS, PCLK,
+DATA0-3 and the touch INT and no TE, and their Arduino `pin_config.h` agrees —
+but neither is a measurement, and the panel *is* pulsing TE (`sh8601_init`
+sends `0x35`). `apps/tescan.c` configures all 18 free pads as inputs and watches
+each for 200 ms under an internal pull-down and again under a pull-up, because
+a pad is only *driven* if it reads the same under both. All 18 float. GPIO0
+sits high (boot strap) and GPIO13 low, both static, neither toggling.
+
+The scanner proves it can see a signal before its silence is believed: it
+drives a known-floating pad at 60 Hz and requires itself to read that rate back.
+An earlier version spun a fixed loop count on an assumed sample rate — the
+"200 ms" window was really 13.5 ms, shorter than a 60 Hz period, and would have
+reported a healthy TE line as floating.
+
 ### 2.2 Display
 
 | Property | Value |
@@ -972,7 +1001,34 @@ overhead it is measuring.
 *(Attribution is inference from the arithmetic and timing, not an isolated
 experiment - flagged as such rather than asserted.)*
 
-### 6.6h 80 MHz bus - REFUTED. 40 MHz is the panel's usable maximum.
+### 6.6h 80 MHz bus — SUPERSEDED. 80 MHz is what ships.
+
+> **CORRECTION (2026-08-25).** The finding below — that the panel rejects
+> 80 MHz — no longer holds. The runtime has shipped at **80 MHz** since
+> `spi2_set_clock(SPI_MHZ)` in `main.c`: every transport self-test passes
+> (FIFO and DMA, 1 to 448 rows, sub-width, multi-span, with injected 1-bit,
+> duplicate and shift faults still DETECTED), a full repaint dropped
+> **31.4 ms → 22.2 ms**, and the panel has been driven for extended sessions
+> with clean output.
+>
+> Note the gain is **1.41x, not 2x**, which is the useful part: doubling the
+> clock did not halve the frame, so the frame is no longer purely wire-bound.
+> About 18 µs per row goes on the wire and about 29 µs on per-row command
+> overhead and rendering inside the rowfn.
+>
+> The original experiment observed real corruption — that is not in dispute.
+> What is now doubtful is the attribution. That test alternated 40 and 80 MHz
+> phases with a full re-init at each transition, and the symptom it recorded
+> ("~15 s of bars then ~30 s of black, not tracking the phases at all") does
+> not match a clock the panel cannot receive; it matches a panel left in a bad
+> state by the re-init path. A single-rate configuration set once at boot has
+> never shown it.
+>
+> Kept below rather than deleted, because the measurements are sound and only
+> the conclusion was wrong — and because "the panel cannot do X" is exactly the
+> kind of inherited claim this project has now been wrong about twice.
+
+#### Original finding (2026-08, superseded)
 
 Experiment 0a, finally run once the PLL made APB 80 MHz available.
 
@@ -1687,58 +1743,77 @@ flickered on and off, and a coordinate label churned set/cleared every frame,
 costing 6,656 px a frame on an untouched screen. With gating restored,
 `lblfr` stays frozen while nothing is touching.
 
-### 11.4 Span-boundary debris - REAL, WORKED AROUND, NOT EXPLAINED
+### 11.4 Span-boundary debris — CHARACTERISED AND SUPPRESSED
 
-Text over the moving bar leaves debris while a label is updating. Static text
-over the same moving bar is perfect.
+Debris appeared at span boundaries for most of this project's life. It forced
+two workarounds — `gfx` marking label rows full width, and vector scenes
+repainting whole frames — and both are now retired on measurement.
 
-**What was eliminated, with evidence:**
+**The trigger, measured.** Over 6000 frames of real gameplay, every frame
+containing an explosion produced at least one span **shorter than 8 rows**
+(266 across 266 such frames, minimum 1 row), stranded in otherwise
+untransmitted territory. Quiet frames produced one only 16% of the time. The
+device reported debris on exactly those frames and no others: *"only when they
+explode, otherwise perfect."*
+
+So the variable is **short and/or isolated windows**, not span count as such.
+
+**The suppression.** Two levers, both in `vg_present`, and the measurement
+picked the winner:
+
+| lever | effect | cost |
+|---|---|---|
+| pad short runs (`VG_MIN_RUN` 48) | ~80% fewer artifacts | 96-row padding costs 13 points of elision |
+| merge runs across gaps (`VG_MERGE_GAP` 64) | 3.1 → 1.9 spans/frame | 1 point of elision |
+
+Merging is the better lever by a wide margin: sending a few unchanged rows is
+far cheaper than creating another isolated window. With merging on, `MIN_RUN`
+matters little — merging already absorbs stranded runs into their neighbours.
+
+`elide` was changed to match. It used to coalesce adjacent dirty rows only on
+**identical** x-extents, which priced bytes correctly but missed that an extra
+span carries a *correctness* risk on top of its ~44 bytes. It now extends a run
+while the union stays cheaper than a new span, with `ELIDE_SPAN_COST` set well
+above the byte price as a deliberate thumb on the scale. That retired the `gfx`
+full-width label workaround: a label beside the bar is unioned by arithmetic
+instead of every caller pre-widening itself, and a label alone on clean rows
+stays narrow — which full-width marking could never do.
+
+**What was ruled out**, all measured on hardware, none of them the cause:
 
 | ruled out | how |
 |---|---|
-| lost or failed flushes | `fails=0` across 441 touched frames |
-| phantom contacts | `lblfr` frozen with nothing touching |
-| sub-width *transmission* | 3 ledger cases, exact byte counts and digests |
-| multi-span frames | ledger case, 3 spans, `px=17664/17664`, digest match |
-| marking logic | host panel simulation, 400 frames of the exact scene, zero mismatched rows |
-| **the panel ignoring partial column windows** | **on-glass band test: it honours them** |
+| span count alone | `spanlab`: 23 spans, static frame, clean |
+| CS settling time | 20 µs and 200 µs gaps between spans, clean |
+| the output AFIFO | drain present, absent, and widened — no correlation |
+| FIFO vs DMA transport | both clean on the same pattern |
+| window churn | addresses moving every frame, frozen picture, clean |
+| touch polling | I2C transaction per frame, result discarded, clean |
+| vector rowfns | `vec_fill16` instead of a C loop, clean |
+| changing content | rotating colours so staleness is visible, clean |
+| duty cycle | 40/20/5/0 ms idle after each frame, clean at all four |
+| store ordering | `storeprobe`: 20,000 trials of vector-store → scalar-store → vector-load, zero mismatches with or without `MEMW` |
+| segment overflow | peaks at 186 of 512 firing every other frame |
+| marking correctness | elided panel pixel-identical to a full repaint, 6000 frames, under ASAN |
 
-The band test is what turned the investigation. Three bands of known geometry -
-one full width, two narrow and on opposite edges - showed partial windows
-working correctly, killing the leading theory, and then showed **colour from one
-band bleeding into the start of the next**. That is debris at a transfer
-boundary, not a geometry fault.
+**Why it took so long.** `spanlab` was built upward from a clean case and
+retired suspects for four rounds without reproducing anything. It *had* 1-row
+spans — the black gaps between bands — but they were always **adjacent** to
+their neighbours, so the window's Y address always advanced contiguously. It
+never made the panel jump to a stranded window and back. Short spans were
+tested; isolated ones were assumed to be the same thing.
 
-**The hidden variable was span COUNT, not width.** `elide` coalesces contiguous
-rows only when their extents are IDENTICAL, so a narrow label mark sitting among
-full-width bar marks splits one span into three or four. Measured: 2 spans
-static, 4 while a label updates. Width only ever mattered because it prevented
-coalescing.
+Two apparent fixes along the way were regressions of our own making, and both
+were believed on a single look at the panel. That is the standing lesson: the
+panel is the least reliable instrument available, and a change must be
+validated on its own before anything is built on top of it.
 
-**Partial fix, kept:** `spi2_flush_afifo()` drains the output AFIFO at the start
-of each span. `spi2_dma_start()` has always done this and IDF's
-`spi_hal_hw_prepare_tx()` does the same; the FIFO path - the one that ships -
-never did. It is a genuine defect and it is now fixed. **It did not resolve the
-artifact**, so the explanation is incomplete and this is recorded as such.
-
-**Workaround, kept and documented in `gfx.c`:** a changed label marks its full
-ROWS rather than its columns, keeping those rows in one span with their
-neighbours. Cost is bounded and small - 368 columns instead of 208 on label rows
-only, 1.8x, on text updates alone. Rectangles still mark sub-width, so the large
-win is untouched.
-
-**Residual:** a thin line of the bar's colour survives one pass when a touch
-readout updates while the bar crosses it. Judged acceptable: a full-width band
-scrolling continuously under changing text is a stress case, not an interface.
-
-**What this needs, and does not have:** an on-device check that reproduces
-span-boundary debris without a human looking at the screen. The transmit ledger
-is structurally blind to it - the bytes handed to the peripheral are correct,
-and what leaks is on the far side of that measurement. This is the same blind
-spot that has banded DMA parked (6.6l), and being in it again is the honest
-status.
-
----
+**Still open:** the mechanism inside the panel. We know the trigger precisely
+and nothing about what the controller does with a short stranded window. The
+diagnostic if it returns is `VG_MERGE_GAP` at 128 — one span per frame, 3%
+elided, not a shipping configuration but decisive about whether jump count
+alone is the variable. A real answer needs an external wire observer; the panel
+itself is silent (§2).
 
 ## Appendix A — Register reference
 

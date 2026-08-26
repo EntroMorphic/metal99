@@ -369,6 +369,9 @@ static void gfx_rowfn(uint16_t *row, int y)
     }
 }
 
+static int g_label_full;
+void gfx_dbg_label_full(int on) { g_label_full = on; }
+
 int gfx_present(void)
 {
     uint32_t t0 = cpu_cycles();
@@ -416,10 +419,12 @@ int gfx_present(void)
          * 368 columns instead of 208 was the old price on EVERY label row.
          */        if (g_label_sent[y].len != 0u) {
             label_rect(&g_label_sent[y], &x0, &y0, &x1, &y1);
+            if (g_label_full) { x0 = 0; x1 = SH8601_WIDTH - 1; }
             elide_mark_rect(x0, y0, x1, y1);
         }
         if (g_label[y].len != 0u) {
             label_rect(&g_label[y], &x0, &y0, &x1, &y1);
+            if (g_label_full) { x0 = 0; x1 = SH8601_WIDTH - 1; }
             elide_mark_rect(x0, y0, x1, y1);
         }
     }
