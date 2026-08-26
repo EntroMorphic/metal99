@@ -79,13 +79,16 @@ int sh8601_init(void);
 int sh8601_sleep(void);
 
 /*
- * MIPI DCS vertical scroll. If the panel implements these, scrolling costs ONE
- * command instead of a repaint - an asymptote change, not a multiplier.
- *   0x33 VSCRDEF  : top-fixed, scroll-area, bottom-fixed (rows)
- *   0x37 VSCRSAR  : scroll start row
+ * NO PANEL-SIDE SCROLL. sh8601_scroll_def() and sh8601_scroll_start() used to
+ * live here, wrapping MIPI DCS 0x33 VSCRDEF and 0x37 VSCRSAR, under a comment
+ * that began "If the panel implements these..." - which was written before it
+ * was tested and never updated after. It was tested: the bars did not move
+ * (DESIGN.md 4). This panel does not implement them.
+ *
+ * Removed rather than left in place, because dead code for a DISPROVEN feature
+ * is worse than no code at all: the header was inviting the next person to
+ * spend an afternoon on an idea this project had already closed.
  */
-int sh8601_scroll_def(uint16_t tfa, uint16_t vsa, uint16_t bfa);
-int sh8601_scroll_start(uint16_t row);
 
 /*
  * Telemetry from the REAL workload - no synthetic probe traffic. Measuring the
