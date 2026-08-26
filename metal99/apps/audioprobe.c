@@ -26,6 +26,7 @@
 #include "app.h"
 #include "io.h"
 #include "i2c.h"
+#include "es8311.h"
 
 #define ES8311_ADDR   0x18u   /* 7-bit; the vendor header quotes 0x30, 8-bit */
 #define REG_CHIP_ID1  0xFDu
@@ -71,10 +72,34 @@ static void identify(void)
         con_puts("  chip ID does NOT match 0x83/0x11 - something else answered\r\n");
 }
 
+static void bringup(void)
+{
+    int rc;
+    con_puts("\r\naudioprobe: bringing the codec up (16 kHz, 16-bit)\r\n");
+    rc = es8311_init();
+    con_puts("  es8311_init rc="); con_dec((int32_t)rc);
+    con_puts("  chip_id=0x"); con_hex32(es8311_chip_id());
+    con_puts("\r\n");
+    if (rc != ES8311_OK) {
+        con_puts("  NOT configured. Nothing above this can work yet.\r\n");
+        return;
+    }
+    /*
+     * Every register in the sequence was read back and matched. That means the
+     * codec is listening and configured - it does NOT mean anything is
+     * audible, because no I2S clock or data is reaching it yet. Distinguishing
+     * those two states before writing an I2S driver is the whole point of
+     * doing the codec first.
+     */
+    con_puts("  every register verified by read-back. Codec is configured.\r\n");
+    con_puts("  still silent: no MCLK/BCLK/WS and no data - that is i2s.c.\r\n");
+}
+
 static void ap_init(void)
 {
     scan();
     identify();
+    bringup();
     con_puts("audioprobe: done\r\n");
 }
 
