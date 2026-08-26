@@ -225,40 +225,29 @@ void spi2_flush_afifo(void)
      * Pulse the buffer AFIFO reset, then clear. DMA_TX_ENA stays off: this is
      * the FIFO path, and touching that bit would switch the data path.
      *
-     * THE READ-BACKS ARE NOT THE FIX FOR THE SPAN DEBRIS. They were committed
-     * as one, on a single look at the panel that turned out to be a stale
-     * flash, and the debris is still there with them in. Correcting that here
-     * because a wrong root cause in a comment is worse than no root cause: it
-     * stops the next person looking.
+     * NO READ-BACKS, AND THAT IS DELIBERATE NOW. I added them to widen the
+     * reset pulse - two posted stores hold it for ~12.5 ns against a 25 ns
+     * clock domain, which is a latent defect by inspection - committed them as
+     * a fix for the span debris on one look at a stale flash, and then KEPT
+     * them through the revert on the grounds that they were harmless.
      *
-     * They stay, on their own merit, which is narrow and real. Two back-to-back
-     * stores to this register are posted writes leaving the core one after the
-     * other, so the reset was asserted for roughly one APB cycle - about
-     * 12.5 ns at 80 MHz APB - against an AFIFO in the SPI clock domain whose
-     * period is 25 ns at a 40 MHz bus. A pulse narrower than the edge meant to
-     * sample it is a latent defect by inspection, whatever else is also wrong.
-     * Reading the register back forces the posted write to complete before the
-     * next store issues, so the assertion is a full bus round trip wide. IDF's
-     * equivalent is a read-modify-write, which is wide by accident.
+     * They were not validated on a clean configuration, and the last build
+     * confirmed good on glass (40b492f) did not contain them. With them in,
+     * the score scrambles.
      *
-     * WHAT IS ACTUALLY KNOWN about the debris, after this:
-     *   - it scales with span count. gridvoid at 1 span/frame never shows it;
-     *     through elision at ~3 spans/frame it does, worse under touch.
-     *   - the transmit ledger cannot see it. It digests what we hand the
-     *     peripheral; this goes wrong downstream of that, which is why every
-     *     self-test passes while the glass disagrees.
-     *   - draining the AFIFO does not fix it, now genuinely tested rather than
-     *     assumed, because the drain now definitely happens.
-     * The last point is worth more than it looks: it retires the AFIFO as the
-     * suspect instead of leaving it plausible.
+     * The mechanism I talked myself past: making the reset actually FIRE means
+     * it can discard bytes the previous span still has queued in the AFIFO,
+     * truncating it. A 50-row band losing its tail is invisible; a
+     * seven-segment digit losing it is a scrambled digit. "The drain now
+     * definitely happens" cuts both ways, and I only wrote down the flattering
+     * half.
      *
-     * The next honest step is not another guess. It is an instrument that can
-     * see the wire - the one thing this project has never had.
+     * If the pulse width is worth fixing - and by inspection it is - it needs
+     * to happen where CS is idle AND the previous span is known drained, and
+     * it needs to be proven on the panel before it is believed.
      */
     SPI_DMA_CONF = SPI_BUF_AFIFO_RST_BIT;
-    (void)SPI_DMA_CONF;
     SPI_DMA_CONF = 0u;
-    (void)SPI_DMA_CONF;
 }
 
 /* ------------------------------------------------------------- transfer */
@@ -311,6 +300,60 @@ int spi2_xfer(const uint8_t *data, uint32_t len, int quad, int keep_cs)
         }
     }
     ledger_add(data, len, quad);
+    return SPI2_OK;
+}
+
+/*
+ * HALF-DUPLEX READ, 1-line, on FSPIQ (D1/GPIO5).
+ *
+ * Written to test a premise, not to add a feature. selftest.h, spi2.h and
+ * elide.h all state that "the panel cannot be read back", and that sentence is
+ * load-bearing: it is why correctness has depended on a human describing the
+ * screen, why the transmit ledger exists, and why a bug that corrupts bytes
+ * downstream of the ledger has survived this long. Nothing in the repo records
+ * anyone TESTING it. This project has been wrong about exactly that kind of
+ * inherited assumption before.
+ *
+ * The QSPI opcode table makes it worth trying: 0x02 writes a command, 0x32
+ * writes pixels, and the convention those come from pairs them with 0x03 for
+ * read. Call with CS already held low by the command that precedes it.
+ *
+ * `dummy_bits` is how many clocks to idle between the command and the data;
+ * panels differ and the datasheet is not in this repo, so the caller sweeps it.
+ */
+int spi2_read(uint8_t *dst, uint32_t len, uint32_t dummy_bits)
+{
+    uint32_t i;
+
+    if (dst == NULL)                        return SPI2_E_NULL;
+    if (len == 0u || len > SPI2_FIFO_BYTES) return SPI2_E_LEN;
+
+    /* Clear the read window so stale W-register contents cannot be mistaken
+     * for data the panel sent. Without this a panel that drives nothing at all
+     * returns the previous transfer's bytes and looks like it answered. */
+    for (i = 0u; i < (len + 3u) / 4u; i++) SPI_W(i) = 0u;
+
+    SPI_DMA_CONF = 0u;
+    SPI_CTRL = CTRL_D_POL | CTRL_Q_POL;
+    SPI_MISC = MISC_CS1_DIS | MISC_CS2_DIS;      /* release CS when done */
+    SPI_USER = USER_USR_MISO | (dummy_bits ? USER_USR_DUMMY : 0u);
+    SPI_USER1 = dummy_bits ? (dummy_bits - 1u) : 0u;
+    SPI_MS_DLEN = (len * 8u) - 1u;
+
+    if (spi2_sync() != SPI2_OK) return SPI2_E_SYNC;
+
+    SPI_CMD = CMD_USR;
+    {
+        uint32_t guard = 0u;
+        while ((SPI_CMD & CMD_USR) != 0u) {
+            if (++guard > SPI2_SPIN_LIMIT) return SPI2_E_HANG;
+        }
+    }
+
+    for (i = 0u; i < len; i++) {
+        dst[i] = (uint8_t)((SPI_W(i / 4u) >> ((i % 4u) * 8u)) & 0xFFu);
+    }
+    SPI_USER1 = 0u;                              /* leave no dummy cycles set */
     return SPI2_OK;
 }
 

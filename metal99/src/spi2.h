@@ -138,6 +138,17 @@ int spi2_xfer(const uint8_t *data, uint32_t len, int quad, int keep_cs);
 int spi2_write(const uint8_t *data, uint32_t len, int quad);
 
 /*
+ * Half-duplex 1-line read on FSPIQ, with CS already held by a preceding
+ * command. len 1..SPI2_FIFO_BYTES. `dummy_bits` idles that many clocks between
+ * command and data.
+ *
+ * Exists to test whether "the panel cannot be read back" - repeated as a
+ * premise in three headers and never, as far as the repo records, actually
+ * tried - is true.
+ */
+int spi2_read(uint8_t *dst, uint32_t len, uint32_t dummy_bits);
+
+/*
  * DMA transfer. `chain` is a GDMA descriptor list describing the bytes; the
  * FIFO is bypassed entirely, so the 16-byte alignment contract above does not
  * apply (GDMA reads memory directly).
