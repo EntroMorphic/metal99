@@ -88,6 +88,28 @@ An A/B harness is cheap. `apps/spanlab.c` and `apps/uilab.c` are the pattern:
 static content, one variable, an on-screen indicator saying which phase is
 live, and a detector region that has no legitimate reason to ever change.
 
+## Archive, never delete
+
+Code does not leave this project by deletion. It moves to `archive/retired/`
+with a header saying what it did and the measurement that retired it.
+
+A function that was written, tested and then displaced is a **recorded result**.
+"We tried panel-side scroll and it does nothing" is worth more as working code
+plus an outcome than as a sentence in a design doc - deletion throws away the
+evidence and invites the next person to repeat the experiment.
+
+### A scripted edit must assert its own bounds
+
+Any script that removes lines states, and checks, its exact first and last line
+before touching the file.
+
+This is not hypothetical. A deletion that searched backwards for a comment
+boundary removed 260 lines including `sh8601_init`, `sh8601_write_frame` and
+`sh8601_write_span_x` - and **it compiled**, because what remained was still
+valid C. The only symptom was one now-unused static function, which was luck.
+"It builds" is not the check. Three separate scripted deletions over-cut in a
+single session; every one was caught by accident rather than by design.
+
 ## Instruments belong in the repo
 
 No ephemeral code. Probes, harnesses and diagnostics go in `tools/` or
