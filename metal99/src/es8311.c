@@ -42,7 +42,7 @@
 #define R_ADC16      0x16u
 #define R_ADC1B      0x1Bu
 #define R_ADC1C      0x1Cu
-#define R_DAC31      0x31u
+#define R_DAC31      0x31u   /* bits 6:5 are MUTE - set at power-up */
 #define R_DAC32      0x32u
 #define R_DAC37      0x37u
 #define R_GPIO44     0x44u
@@ -106,7 +106,16 @@ static const struct { uint8_t reg, val, verify; } INIT[] = {
     { R_SYS12,  0x00u, 1 },   /* DAC enabled                                */
     { R_SYS14,  0x1Au, 1 },
     { R_DAC37,  0x08u, 1 },
-    { R_DAC32,  0x00u, 1 },   /* start muted - the amp is enabled separately */
+    /*
+     * UNMUTE. Bits 6:5 of DAC31 are the mute control and the part comes up
+     * with them SET - the vendor driver's open() path ends with an explicit
+     * set_mute(true), so nothing about the power-on state is silent by
+     * accident. Configure every other register perfectly and skip this one and
+     * the result is a codec that verifies clean, clocks correctly, and makes
+     * no sound at all.
+     */
+    { R_DAC31,  0x00u, 1 },
+    { R_DAC32,  0x00u, 1 },   /* volume 0 - raised after the amp decision */
     { R_SYS0D,  0x01u, 1 }    /* power up analog                            */
 };
 
