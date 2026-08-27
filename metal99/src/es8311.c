@@ -13,6 +13,8 @@
 #define GPIO_ENABLE1_W1TS  REG32(GPIO_BASE + 0x30u)   /* GPIO 32..48 */
 #define GPIO_OUT1_W1TS     REG32(GPIO_BASE + 0x14u)
 #define GPIO_OUT1_W1TC     REG32(GPIO_BASE + 0x18u)
+#define GPIO_IN1           REG32(GPIO_BASE + 0x40u)
+#define IOMUX_FUN_IE       (1u << 9)
 #define GPIO_FUNC_OUT(n)   REG32(GPIO_BASE + 0x554u + 4u * (uint32_t)(n))
 #define IO_MUX_GPIO(n)     REG32(0x60009004u + 4u * (uint32_t)(n))
 #define IOMUX_MCU_SEL_S    12
@@ -34,6 +36,7 @@
 #define R_SYS0B      0x0Bu
 #define R_SYS0C      0x0Cu
 #define R_SYS0D      0x0Du
+#define R_SYS0E      0x0Eu
 #define R_SYS10      0x10u
 #define R_SYS11      0x11u
 #define R_SYS12      0x12u
@@ -84,11 +87,25 @@ static int wr(uint8_t reg, uint8_t val, int verify)
 static const struct { uint8_t reg, val, verify; } INIT[] = {
     { R_SYS0D,  0xFAu, 1 },   /* hold powered down while we configure       */
     { R_GPIO44, 0x08u, 1 },   /* DAC takes its data from the serial port    */
-    { R_CLK1,   0x30u, 1 },   /* clock manager: MCLK from the pad           */
+    /*
+     * 0x3F, not 0x30. This register is the clock manager's PER-BLOCK enables -
+     * MCLK, BCLK, the digital DAC and ADC clocks, and the analog DAC and ADC
+     * clocks - and the vendor's start path writes 0x3F with all six on. 0x30
+     * enables only the top two, which leaves the DAC unclocked: the part
+     * accepts every other register, reads them all back correctly, and
+     * produces silence.
+     */
+    { R_CLK1,   0x3Fu, 1 },
     { R_CLK2,   0x00u, 1 },   /* pre_div 1, pre_mult 1                      */
     { R_CLK3,   0x10u, 1 },   /* fs_mode 0 | adc_osr 0x10                   */
     { R_ADC16,  0x24u, 1 },
-    { R_CLK4,   0x20u, 1 },   /* dac_osr 0x20                               */
+    /*
+     * 0x30, not 0x20. The vendor writes 0x10 here and then read-modify-writes
+     * the DAC oversampling ratio INTO it - so the final value is 0x10 | 0x20.
+     * Transcribing only the coefficient loses the base bits, and an oversample
+     * setting the DAC does not expect is a DAC that clocks and outputs nothing.
+     */
+    { R_CLK4,   0x30u, 1 },
     { R_CLK5,   0x00u, 1 },   /* adc_div 1, dac_div 1                       */
     { R_CLK7,   0x00u, 1 },   /* lrck high byte                             */
     { R_CLK8,   0xFFu, 1 },   /* lrck low byte                              */
@@ -104,6 +121,9 @@ static const struct { uint8_t reg, val, verify; } INIT[] = {
     { R_ADC1B,  0x0Au, 1 },
     { R_ADC1C,  0x6Au, 1 },
     { R_SYS12,  0x00u, 1 },   /* DAC enabled                                */
+    /* REG0E was missing entirely from this sequence; the vendor writes it in
+     * the enable path, between the interface registers and the power-up. */
+    { R_SYS0E,  0x02u, 1 },
     { R_SYS14,  0x1Au, 1 },
     { R_DAC37,  0x08u, 1 },
     /*
@@ -122,11 +142,19 @@ static const struct { uint8_t reg, val, verify; } INIT[] = {
 void es8311_amp(int on)
 {
     /* GPIO46 is above 31, so it lives in the second bank's registers. */
-    IO_MUX_GPIO(PIN_PA) = (1u << IOMUX_MCU_SEL_S) | (2u << IOMUX_FUN_DRV_S);
+    /* FUN_IE so the pad can be read back - an amp enable that silently fails
+     * to drive is indistinguishable from a dead speaker. */
+    IO_MUX_GPIO(PIN_PA) = (1u << IOMUX_MCU_SEL_S) | (2u << IOMUX_FUN_DRV_S)
+                        | IOMUX_FUN_IE;
     GPIO_FUNC_OUT(PIN_PA) = SIG_GPIO_OUT;
     GPIO_ENABLE1_W1TS = (1u << (PIN_PA - 32u));
     if (on) GPIO_OUT1_W1TS = (1u << (PIN_PA - 32u));
     else    GPIO_OUT1_W1TC = (1u << (PIN_PA - 32u));
+}
+
+uint32_t es8311_amp_level(void)
+{
+    return (GPIO_IN1 >> (PIN_PA - 32u)) & 1u;
 }
 
 int es8311_volume(uint8_t level)

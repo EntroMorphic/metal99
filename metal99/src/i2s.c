@@ -21,6 +21,8 @@
 #define TX_UPDATE       (1u << 8)
 #define TX_STOP_EN      (1u << 13)
 #define TX_WS_IDLE_POL  (1u << 17)
+#define TX_TDM_EN       (1u << 19)   /* frame structure - without it, no WS */
+#define TX_PDM_EN       (1u << 20)
 #define TX_CHAN_MOD_S   24
 
 #define TX_TDM_WS_WIDTH_S  0
@@ -107,6 +109,22 @@
  * indistinguishable from "nothing works" if you are not expecting it.
  */
 static gdma_desc VEC_ALIGN g_desc;
+/*
+ * SHADOW OF TX_CONF, and it is not a convenience.
+ *
+ * Every write to that register used to be a read-modify-write, and TX_UPDATE
+ * is a self-clearing REQUEST bit that lives in it. So each RMW read the
+ * register while UPDATE was still pending, ORed in whatever it wanted, and
+ * wrote UPDATE straight back - re-asserting the very bit it was waiting on.
+ * The bit could never clear, the configuration never latched, and the
+ * transmitter ran its clocks with no frame sync. Measured as TX_UPDATE stuck
+ * set indefinitely while IDF's identical-looking code clears in cycles.
+ *
+ * The rule now: hardware is never read to decide what to write. The intended
+ * value lives here, is written whole, and UPDATE is pulsed separately so it is
+ * never fed back into anything.
+ */
+static uint32_t g_txconf;
 static uint32_t g_frames;
 static uint32_t g_bytes;
 static uint32_t g_rearms;
@@ -114,6 +132,23 @@ static uint32_t g_rearms;
 /* FUN_IE is set on outputs deliberately: it lets the pad be READ BACK, which
  * is how i2s_dbg_pad_edges tells "the clock is running" from "the clock is
  * configured". Without it, silence has no diagnosis. */
+/*
+ * Write the shadow, then request a latch, then wait for the request to clear.
+ *
+ * The wait is bounded but not fatal: TX_UPDATE self-clears in a handful of
+ * cycles once it is not being fed back, and if a future revision changes that
+ * a stuck bit should not stop the transmitter from being started - the earlier
+ * version returned an error here and left TX_START unwritten, turning a
+ * partly-working transmitter into a dead one.
+ */
+static void tx_apply(void)
+{
+    uint32_t guard = 0u;
+    I2S_TX_CONF = g_txconf;
+    I2S_TX_CONF = g_txconf | TX_UPDATE;
+    while ((I2S_TX_CONF & TX_UPDATE) != 0u) if (++guard > 10000u) break;
+}
+
 static void route(uint32_t gpio, uint32_t sig)
 {
     IO_MUX_GPIO(gpio) = (1u << IOMUX_MCU_SEL_S) | (3u << IOMUX_FUN_DRV_S)
@@ -144,6 +179,7 @@ int i2s_init(void)
 
     I2S_TX_CONF = TX_RESET | TX_FIFO_RESET;
     I2S_TX_CONF = 0u;
+    g_txconf = 0u;
 
     /*
      * MCLK = XTAL / 10 = 4.000 MHz. clk_sel 0 is XTAL; the fractional fields
@@ -203,8 +239,22 @@ int i2s_init(void)
      * be a moment of silence in a continuing stream, not a stopped clock the
      * codec has to resynchronise to.
      */
-    I2S_TX_CONF = TX_WS_IDLE_POL | (0u << TX_CHAN_MOD_S);
-    I2S_TX_CONF = I2S_TX_CONF | TX_UPDATE;             /* latch config */
+    /*
+     * TX_TDM_EN IS NOT OPTIONAL AND NOT A DEFAULT.
+     *
+     * It selects the frame structure the transmitter emits. Without it the
+     * clocks run - MCLK and BCLK both measured leaving the chip - and there is
+     * no frame at all: word select never toggles, so the peripheral never asks
+     * GDMA for data, so the descriptor is never consumed. Every symptom in the
+     * previous commit follows from this one missing bit.
+     *
+     * PDM is explicitly disabled alongside it, because the two are separate
+     * enables and the vendor driver clears one while setting the other rather
+     * than trusting the reset state.
+     */
+    g_txconf = TX_WS_IDLE_POL | TX_TDM_EN | (0u << TX_CHAN_MOD_S);
+    g_txconf &= ~TX_PDM_EN;
+    tx_apply();
 
     route(PIN_MCLK, SIG_MCLK_OUT);
     route(PIN_BCK,  SIG_BCK_OUT);
@@ -245,8 +295,6 @@ int i2s_play_loop(const int16_t *frames, uint32_t nframes)
     GDMA_OUT_LINK_CH1 = OUTLINK_START
                       | ((uint32_t)(uintptr_t)&g_desc & OUTLINK_ADDR_MASK);
 
-    I2S_TX_CONF = I2S_TX_CONF | TX_FIFO_RESET;
-    I2S_TX_CONF = I2S_TX_CONF & ~TX_FIFO_RESET;
 
     /*
      * LATCH THE CONFIG, WAIT FOR IT, THEN START - three steps, not one write.
@@ -267,20 +315,21 @@ int i2s_play_loop(const int16_t *frames, uint32_t nframes)
      * bit means on this silicon, waiting for it is not viable, and a short
      * delay gets the same latch with the clocks demonstrably running.
      */
-    I2S_TX_CONF = I2S_TX_CONF | TX_UPDATE;
-    delay_us(10u);
-    /* Reset the transmitter AFTER the configuration has landed, not before -
-     * a reset applied to a stale config resets to the stale config. */
-    I2S_TX_CONF = I2S_TX_CONF | TX_RESET | TX_FIFO_RESET;
-    I2S_TX_CONF = I2S_TX_CONF & ~(TX_RESET | TX_FIFO_RESET);
-    I2S_TX_CONF = I2S_TX_CONF | TX_START;
+    /* Reset the transmitter and its FIFO, then latch, then start - each a
+     * whole-register write from the shadow, never a read-back. */
+    I2S_TX_CONF = g_txconf | TX_RESET | TX_FIFO_RESET;
+    I2S_TX_CONF = g_txconf;
+    tx_apply();
+
+    g_txconf |= TX_START;
+    tx_apply();
     return I2S_OK;
 }
 
 void i2s_stop(void)
 {
-    I2S_TX_CONF = I2S_TX_CONF & ~TX_START;
-    I2S_TX_CONF = I2S_TX_CONF | TX_UPDATE;
+    g_txconf &= ~TX_START;
+    tx_apply();
     GDMA_OUT_LINK_CH1 = OUTLINK_STOP;
 }
 

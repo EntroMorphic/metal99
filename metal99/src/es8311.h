@@ -46,6 +46,9 @@ int es8311_volume(uint8_t level);
  * transient does not reach the speaker. */
 void es8311_amp(int on);
 
+/* Reads the amplifier enable pin BACK. 1 = driven high = amp on. */
+uint32_t es8311_amp_level(void);
+
 /* Chip ID read during init: 0x8311 on the real part. */
 uint16_t es8311_chip_id(void);
 

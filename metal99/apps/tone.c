@@ -29,14 +29,26 @@
 #include "i2s.h"
 #include "trig.h"
 #include "vec.h"
+#include "vg.h"
+#include "tile.h"
+#include "sh8601.h"
 
 #define PERIOD_SAMPLES 32u                 /* 15625 / 32 = 488.28 Hz */
 #define PERIODS        31u        /* 992 frames = 63 ms per pass */
 #define NFRAMES        (PERIOD_SAMPLES * PERIODS)
-#define AMPLITUDE      8000                /* ~25% of full scale */
+/*
+ * QUIET, and briefly. This was 28000 - near full scale - and looping forever,
+ * on the reasoning that an unmissable tone is the clearest possible signal
+ * during bring-up. It was, and it also made the device genuinely unpleasant to
+ * be near. A diagnostic that has to be unplugged is a diagnostic nobody runs
+ * twice.
+ */
+#define AMPLITUDE      3000                /* ~9% of full scale */
+#define BEEP_FRAMES    (I2S_RATE_HZ / 2u)  /* half a second, then stop */
 
 static int16_t VEC_ALIGN g_wave[NFRAMES * 2];   /* stereo interleaved */
 static int g_ready;
+static int g_stopped;
 
 static void build_wave(void)
 {
@@ -74,7 +86,7 @@ static void tone_init(void)
      * never sees the DAC's power-up transient - which on some codecs is a
      * substantial pop.
      */
-    (void)es8311_volume(0xBFu);            /* roughly 0 dB on the DAC scale */
+    (void)es8311_volume(0x60u);            /* well below 0 dB */
     es8311_amp(1);
 
     rc = i2s_play_loop(g_wave, NFRAMES);
@@ -93,18 +105,58 @@ static void tone_init(void)
     con_puts("  GPIO8 DOUT=");   con_dec((int32_t)i2s_dbg_pad_selftest(8u, 200u));
     con_puts("\r\n");
 
+    con_puts("  amp pin reads back: "); con_dec((int32_t)es8311_amp_level());
+    con_puts("  (1 = driven high = enabled)\r\n");
+    con_puts("  wave[0..3] = ");
+    { int k; for (k = 0; k < 4; k++) { con_dec((int32_t)g_wave[k]); con_puts(" "); } }
+    con_puts(" peak="); 
+    { int k, pk = 0; for (k = 0; k < (int)(NFRAMES*2); k++) {
+        int v = g_wave[k] < 0 ? -g_wave[k] : g_wave[k]; if (v > pk) pk = v; }
+      con_dec((int32_t)pk); }
+    con_puts("\r\n");
     con_puts("  amp ON, volume 0xBF. You should hear a steady tone.\r\n");
     con_puts("  wrong PITCH means the dividers are off. ONE CLICK means the\r\n");
     con_puts("  DMA loop stopped. SILENCE means clocks, amp or speaker.\r\n");
     g_ready = 1;
 }
 
-/* Nothing to draw. The panel stays black on purpose - if the display were
- * doing work it would be one more thing between here and a diagnosis. */
+/*
+ * A MOVING BAR, deliberately.
+ *
+ * This app used to draw nothing at all, on the reasoning that a quiet display
+ * is one less thing between a symptom and a diagnosis. That was wrong in a way
+ * worth recording: the panel retains its framebuffer, so "draws nothing" means
+ * the boot test patterns stay on the glass indefinitely - and a build that
+ * never changes the screen is indistinguishable from a build that never
+ * flashed. It cost a round of "did you reflash it?", which is exactly the kind
+ * of ambiguity this project keeps paying for.
+ *
+ * The bar sweeps in step with the audio buffer, so it also says the frame loop
+ * is running and re-arming, not wedged.
+ */
 static int tone_frame(uint32_t f)
 {
-    (void)f;
+    int y = (int)((f * 3u) % (uint32_t)(SH8601_HEIGHT - 40));
+
+    vg_set_bg(0x0000u);
+    vg_begin();
+    /* Green while the audio path reports healthy, red if init failed. */
+    { uint16_t c = g_ready ? sh8601_rgb565(0, 255, 90)
+                           : sh8601_rgb565(255, 40, 0);
+      int k;
+      for (k = 0; k < 40; k++) vg_line(0, y + k, SH8601_WIDTH - 1, y + k, c); }
+    vg_finish();
+    (void)tile_present(vg_rowfn);
+
     if (!g_ready) return 0;
+
+    /* Beep, then stop and stay stopped. Long enough to hear, short enough to
+     * live with. Re-flash to hear it again. */
+    if (f * (I2S_RATE_HZ / 30u) > BEEP_FRAMES) {
+        if (!g_stopped) { i2s_stop(); es8311_amp(0); g_stopped = 1;
+                          con_puts("  beep done, amp off\r\n"); }
+        return 0;
+    }
     (void)i2s_service();          /* re-arm before the buffer drains */
 
     /*
@@ -129,4 +181,4 @@ static int tone_frame(uint32_t f)
     return 0;
 }
 
-const app_t APP = { "tone", 60u, tone_init, tone_frame, 0 };
+const app_t APP = { "tone", 30u, tone_init, tone_frame, 0 };
