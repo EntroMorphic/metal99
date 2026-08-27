@@ -16,7 +16,11 @@
 
 #include <stdint.h>
 
-typedef struct { const int16_t *pcm; uint32_t len; } sfx_clip;
+/*
+ * A clip is now the ORIGINAL MP3, not decoded samples. minimp3 turns it into
+ * audio at playback time, at its native rate, with nothing altered on the way.
+ */
+typedef struct { const uint8_t *mp3; uint32_t len; } sfx_clip;
 
 extern const sfx_clip SFX[];
 extern const uint32_t SFX_COUNT;
@@ -24,9 +28,9 @@ extern const uint32_t SFX_COUNT;
 /* Indices into SFX[], in the order tools/mksfx.py emits them. */
 #define SFX_FIRE 0u
 #define SFX_KILL 1u
-#define SFX_PROBE 2u   /* a baked sine - see tools/mksfx.py */
 
-#define SFX_VOICES 4u        /* simultaneous effects before the oldest is stolen */
+
+#define SFX_VOICES 2u        /* each carries an 11 KB decoder - see sfx.c */
 
 /*
  * Bring up the codec and I2S, then start the silent mixing loop.
@@ -84,5 +88,11 @@ uint32_t sfx_fills(void);
  * a sound.
  */
 uint32_t sfx_starved(void);
+uint32_t sfx_decodes(void);
+uint32_t sfx_decode_fail(void);
+
+/* Emit the first `n` decoded samples of clip 0, so a host can diff them
+ * against ffmpeg's decode of the same file. */
+void sfx_dbg_first_samples(void (*emit)(int32_t v), uint32_t n);
 
 #endif /* SFX_H */

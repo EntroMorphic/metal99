@@ -27,8 +27,17 @@ done
 
 # Extension surface. __asm__ and __attribute__ are the two we accept and have
 # documented; anything else is new and must be justified, not absorbed.
+# VENDORED CODE IS EXCLUDED FROM THE EXTENSION SURVEY, not from the compile.
+#
+# minimp3 is third-party and uses __builtin_constant_p. It still has to COMPILE
+# under -std=c99 -pedantic-errors -Werror like everything else - that check is
+# above and it passes - but auditing someone else's extension use tells us
+# nothing actionable: we do not edit it, and its provenance and licence are
+# recorded in its own README. The survey exists to stop OUR code drifting.
+VENDORED='/minimp3/'
 unexpected=$(grep -rnE '\b(typeof|__typeof__|__builtin_[a-z_]+)\b|\(\{' \
              $M/src $M/apps --include=*.c --include=*.h 2>/dev/null \
+             | grep -v "$VENDORED" \
              | grep -vE '^\s*[^:]+:[0-9]+:\s*\*' || true)
 if [ -n "$unexpected" ]; then
     echo "  FAIL undocumented GNU extension:"; echo "$unexpected" | sed 's/^/       /'
@@ -39,6 +48,7 @@ fi
 # every time the extensions were discussed in prose, which is a metric that
 # measures documentation rather than exposure.
 code() { grep -rn "$1" $M/src $M/apps --include=*.c --include=*.h 2>/dev/null \
+         | grep -v '/minimp3/' \
          | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(\*|/\*|//)' | wc -l; }
 a=$(code '__asm__'); b=$(code '__attribute__')
 echo "  extension surface: __asm__ x$a, __attribute__ x$b, nothing else"

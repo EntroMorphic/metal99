@@ -31,7 +31,7 @@
 
 #include <stdint.h>
 
-#define I2S_RATE_HZ   31250u
+#define I2S_RATE_HZ   48000u
 #define I2S_CHANNELS  2u             /* the codec expects stereo frames */
 
 #define I2S_OK          0
@@ -75,6 +75,7 @@ uint32_t i2s_rearms(void);
  * -1) and points *out at it; fill it, then release THAT index. Claiming one
  * half and releasing all of them replays stale audio on every underrun.
  */
+#define I2S_RING_BUFFERS 4
 int      i2s_play_ring(int16_t *buf, uint32_t frames_half);
 int      i2s_ring_claim(int16_t **out);
 void     i2s_ring_release(int half);

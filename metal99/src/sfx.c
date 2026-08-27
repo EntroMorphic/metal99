@@ -1,64 +1,59 @@
-/* Sound-effect mixer over the I2S ring. See sfx.h. */
+/* Sound effects: MP3 decoded on the fly, mixed into the I2S ring. See sfx.h. */
 #include <stddef.h>
 #include "sfx.h"
 #include "i2s.h"
 #include "es8311.h"
 #include "vec.h"
 
+#define MINIMP3_IMPLEMENTATION
+#define MINIMP3_NO_STDIO
+#include "minimp3/minimp3.h"
+
 /*
- * SIZED IN MILLISECONDS, not in samples, because that is the property that
- * matters and the one that silently broke.
+ * A buffer must outlast the gap between sfx_service() calls, which is one
+ * video frame - 25 ms at 40 Hz. At 48 kHz, 1000 stereo frames is 4000 bytes
+ * (just under the 4095 a single GDMA descriptor carries) and 20.8 ms. Four of
+ * them give 83 ms, which is three video frames of slack.
  *
- * A half must outlast the gap between sfx_service() calls, which is one video
- * frame: 25 ms at 40 Hz, 33 ms at 30. This was 480 frames - comfortable at
- * 15625 Hz (30.7 ms) and an underrun EVERY FRAME once the rate doubled to
- * 31250 and the same 480 samples became 15.4 ms. Nothing complained; the DMA
- * simply replayed whatever was in the half, which is what "raking rocks"
- * sounds like.
- *
- * 1000 frames is 4000 bytes, just under the 4095 a single GDMA descriptor can
- * carry, and 32 ms at 31250 Hz. Two halves give 64 ms - roughly two frames of
- * slack at either cadence.
+ * Sized in MILLISECONDS on purpose. This was once expressed in samples, and a
+ * change of sample rate silently halved it in time and underran every frame.
  */
 #define HALF_FRAMES 1000u
 
-/*
- * The buffer the DMA loops over. Two halves; the hardware plays one while
- * sfx_service fills the other.
- *
- * 480 frames is chosen against the FRAME RATE, not the sample rate: gridvoid
- * runs at 40 Hz, so a half lasts longer than a frame period and one refill per
- * frame is always enough. Sizing it to the sample rate instead would have made
- * the audio correct only while the video kept up.
- */
-static int16_t VEC_ALIGN g_buf[HALF_FRAMES * 2u * I2S_CHANNELS];
+static int16_t VEC_ALIGN g_buf[HALF_FRAMES * I2S_RING_BUFFERS * I2S_CHANNELS];
 
-typedef struct { const int16_t *pcm; uint32_t len, pos; } voice;
-static voice g_voice[SFX_VOICES];
 /*
- * 22, which is about 8% of full scale for a single voice.
+ * TWO VOICES, not four.
  *
- * Not a taste decision - a measured one. The first 8-bit build multiplied
- * peak-127 samples by 20, landing at 7.8% of the DAC's range, and it sounded
- * clean. Moving to 16-bit samples with a half-scale mix made the same effects
- * SIX TIMES louder, and they sounded worse: not less resolution, more
- * distortion, from a small speaker driven past where it stays linear.
- *
- * Level and quality are easy to confuse when only one of them changed on
- * purpose. This restores the level that worked and keeps the resolution that
- * was the point.
+ * Each carries a decoder (6.5 KB) and a decoded-frame buffer (4.6 KB), so a
+ * voice costs 11 KB against PCM playback's zero. Two covers what this game
+ * actually overlaps - a shot and a kill - and costs 22 KB. Four would cost 44
+ * and buy simultaneity nothing asks for.
  */
-static uint8_t g_vol = 22u;
-static int g_up;                  /* audio available at all? */
-static uint32_t g_fills;          /* halves actually mixed - 0 means starved */
-static uint32_t g_starved;        /* services that found BOTH halves free    */
+#define VOICES 2u
+
+typedef struct {
+    mp3dec_t        dec;
+    const uint8_t  *src;        /* remaining MP3 bytes            */
+    uint32_t        left;
+    int16_t         pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];
+    uint32_t        have;       /* decoded samples per channel    */
+    uint32_t        pos;        /* consumed so far                */
+    uint32_t        chans;
+    int             active;
+} voice;
+
+static voice g_voice[VOICES];
+static uint8_t g_vol = 50u;   /* TEST: quarter level - see if distortion follows loudness */
+static int g_up;
+static uint32_t g_fills, g_starved, g_decodes, g_decode_fail;
 
 int sfx_init(void)
 {
     uint32_t i;
     int rc;
 
-    for (i = 0u; i < SFX_VOICES; i++) g_voice[i].len = 0u;
+    for (i = 0u; i < VOICES; i++) g_voice[i].active = 0;
     for (i = 0u; i < (uint32_t)(sizeof g_buf / sizeof g_buf[0]); i++) g_buf[i] = 0;
 
     rc = es8311_init();
@@ -66,7 +61,14 @@ int sfx_init(void)
     rc = i2s_init();
     if (rc != I2S_OK)    return rc;
 
-    (void)es8311_volume(0x78u);   /* moderate; the mix scales below this */
+    /*
+     * 0x94, six dB below 0xA8 - half the amplitude.
+     *
+     * The register is logarithmic (value/2 - 95.5 dB), so halving loudness is
+     * subtracting 12 from the value, not dividing it by two. Treating it as a
+     * linear 0..255 fraction once put it at -55 dB and produced silence.
+     */
+    (void)es8311_volume(0x9Fu);          /* about -16 dB */
     es8311_amp(1);
 
     rc = i2s_play_ring(g_buf, HALF_FRAMES);
@@ -76,85 +78,61 @@ int sfx_init(void)
     return 0;
 }
 
-void sfx_volume(uint8_t v) { g_vol = v; }
-uint32_t sfx_fills(void)   { return g_fills; }
-uint32_t sfx_starved(void) { return g_starved; }
-
-void sfx_play_pcm(const int16_t *pcm, uint32_t len)
-{
-    uint32_t i, oldest = 0u, best = 0u;
-    if (!g_up || pcm == NULL || len == 0u) return;
-    for (i = 0u; i < SFX_VOICES; i++) {
-        if (g_voice[i].len == 0u) { oldest = i; break; }
-        if (g_voice[i].pos > best) { best = g_voice[i].pos; oldest = i; }
-    }
-    g_voice[oldest].pcm = pcm;
-    g_voice[oldest].len = len;
-    g_voice[oldest].pos = 0u;
-}
-
-/*
- * Mix ONE voice into a scratch buffer with the same arithmetic sfx_service
- * uses, then check it. Deliberately not sharing code with the mixer - a test
- * that calls the thing it is testing proves only that the function is
- * deterministic.
- */
-uint32_t sfx_selftest(void)
-{
-    static int16_t scratch[64];
-    uint32_t i, bad = 0u;
-    const int16_t *src;
-
-    if (SFX_COUNT == 0u || SFX[0].len < 64u) return 0u;
-    src = SFX[0].pcm;
-
-    for (i = 0u; i < 64u; i++) {
-        int32_t acc = (int32_t)src[i];
-        acc = (acc * (int32_t)g_vol) >> 8;
-        if (acc >  32767) acc =  32767;
-        if (acc < -32768) acc = -32768;
-        scratch[i] = (int16_t)acc;
-    }
-    /*
-     * Recompute independently, and allow ONE LSB.
-     *
-     * The first version of this compared >> 8 against / 256 and reported 51
-     * mismatches in 64 - which is not a mixer fault, it is arithmetic: for
-     * negative samples an arithmetic shift rounds toward minus infinity and
-     * division rounds toward zero. Half the samples in an audio clip are
-     * negative, and half of 64 is 32... plus the boundary cases.
-     *
-     * A test that fires on a 1-LSB rounding difference cannot tell that from
-     * real corruption, which is the only thing it exists to find. The
-     * tolerance makes the difference between the two visible again.
-     */
-    for (i = 0u; i < 64u; i++) {
-        int32_t want = ((int32_t)src[i] * (int32_t)g_vol) / 256;
-        int32_t diff;
-        if (want >  32767) want =  32767;
-        if (want < -32768) want = -32768;
-        diff = (int32_t)scratch[i] - want;
-        if (diff < -1 || diff > 1) bad++;
-    }
-    return bad;
-}
+void sfx_volume(uint8_t v)  { g_vol = v; }
+uint32_t sfx_fills(void)    { return g_fills; }
+uint32_t sfx_starved(void)  { return g_starved; }
+uint32_t sfx_decodes(void)  { return g_decodes; }
+uint32_t sfx_decode_fail(void) { return g_decode_fail; }
 
 void sfx_play(uint32_t clip)
 {
-    uint32_t i, oldest = 0u, best = 0u;
+    uint32_t i, pick = 0u, best = 0u;
 
     if (!g_up || clip >= SFX_COUNT) return;
 
-    /* A free voice if there is one, otherwise steal the one furthest through
-     * its clip - the least of it left to lose. */
-    for (i = 0u; i < SFX_VOICES; i++) {
-        if (g_voice[i].len == 0u) { oldest = i; goto start; }
-        if (g_voice[i].pos > best) { best = g_voice[i].pos; oldest = i; }
+    /* Free voice if there is one, else the one furthest through its clip. */
+    for (i = 0u; i < VOICES; i++) {
+        if (!g_voice[i].active) { pick = i; break; }
+        if (g_voice[i].pos > best) { best = g_voice[i].pos; pick = i; }
     }
-start:
-    g_voice[oldest].pcm = SFX[clip].pcm;
-    g_voice[oldest].len = SFX[clip].len;
-    g_voice[oldest].pos = 0u;
+    mp3dec_init(&g_voice[pick].dec);
+    g_voice[pick].src    = SFX[clip].mp3;
+    g_voice[pick].left   = SFX[clip].len;
+    g_voice[pick].have   = 0u;
+    g_voice[pick].pos    = 0u;
+    g_voice[pick].chans  = 2u;
+    g_voice[pick].active = 1;
+}
+
+/*
+ * Pull the next MP3 frame for a voice. Returns 0 when the clip is finished.
+ *
+ * mp3dec_decode_frame reports frame_bytes even when it produces no samples -
+ * that is how it skips ID3 tags and resyncs after damage - so consuming
+ * frame_bytes unconditionally is what keeps the stream advancing. Treating
+ * "no samples" as end-of-clip would truncate every file with a tag on the
+ * front, which is most of them.
+ */
+static int decode_next(voice *v)
+{
+    mp3dec_frame_info_t info;
+    int n;
+
+    for (;;) {
+        if (v->left == 0u) return 0;
+        n = mp3dec_decode_frame(&v->dec, v->src, (int)v->left, v->pcm, &info);
+        if (info.frame_bytes <= 0) { g_decode_fail++; return 0; }
+        v->src  += info.frame_bytes;
+        v->left -= (uint32_t)info.frame_bytes;
+        if (n > 0) {
+            v->have  = (uint32_t)n;
+            v->pos   = 0u;
+            v->chans = (uint32_t)info.channels;
+            g_decodes++;
+            return 1;
+        }
+        /* no samples this frame - a tag or a resync; keep going */
+    }
 }
 
 void sfx_service(void)
@@ -164,35 +142,99 @@ void sfx_service(void)
     int idx;
 
     if (!g_up) return;
-
-    /*
-     * Fill EVERY free half, not just one. At 40 Hz a frame is 25 ms and a half
-     * is 30.7 ms, so one is normally enough - but a single late frame leaves
-     * both free, and filling one of them would hand the other back stale.
-     */
     if (i2s_underruns()) g_starved++;
 
     while ((idx = i2s_ring_claim(&half)) >= 0) {
-    for (f = 0u; f < HALF_FRAMES; f++) {
-        int32_t acc = 0;
-        for (v = 0u; v < SFX_VOICES; v++) {
-            if (g_voice[v].len == 0u) continue;
-            acc += (int32_t)g_voice[v].pcm[g_voice[v].pos];
-            if (++g_voice[v].pos >= g_voice[v].len) g_voice[v].len = 0u;
+        for (f = 0u; f < HALF_FRAMES; f++) {
+            int32_t l = 0, r = 0;
+
+            for (v = 0u; v < VOICES; v++) {
+                voice *vo = &g_voice[v];
+                if (!vo->active) continue;
+                if (vo->pos >= vo->have && !decode_next(vo)) { vo->active = 0; continue; }
+                if (vo->chans == 2u) {
+                    l += vo->pcm[vo->pos * 2u];
+                    r += vo->pcm[vo->pos * 2u + 1u];
+                } else {
+                    int32_t m = vo->pcm[vo->pos];
+                    l += m; r += m;
+                }
+                vo->pos++;
+            }
+
+            /* Volume as a 0..255 fraction of unity. Clipped, not wrapped:
+             * wrapping turns a loud moment into what sounds like a fault. */
+            l = (l * (int32_t)g_vol) >> 8;
+            r = (r * (int32_t)g_vol) >> 8;
+            if (l >  32767) l =  32767;
+            if (l < -32768) l = -32768;
+            if (r >  32767) r =  32767;
+            if (r < -32768) r = -32768;
+            half[f * 2u]      = (int16_t)l;
+            half[f * 2u + 1u] = (int16_t)r;
         }
-        /*
-         * Volume as a 0..255 fraction of unity, so 128 is half scale. Clipped
-         * rather than wrapped: four voices can sum past the range, and
-         * wrapping turns a loud moment into a burst of noise that sounds like
-         * a hardware fault rather than a mix that is simply too hot.
-         */
-        acc = (acc * (int32_t)g_vol) >> 8;
-        if (acc >  32767) acc =  32767;
-        if (acc < -32768) acc = -32768;
-        half[f * 2u]      = (int16_t)acc;
-        half[f * 2u + 1u] = (int16_t)acc;
+        g_fills++;
+        i2s_ring_release(idx);
     }
-    g_fills++;
-    i2s_ring_release(idx);
+}
+
+uint32_t sfx_selftest(void)
+{
+    /* Decode the first frame of clip 0 and check it produces samples at the
+     * rate the I2S is clocked for. A decoder that silently yields 44100 would
+     * play everything 9% slow, which is audible and easy to misattribute. */
+    mp3dec_t d;
+    mp3dec_frame_info_t info;
+    static int16_t pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];
+    const uint8_t *p;
+    uint32_t left;
+    int n;
+
+    if (SFX_COUNT == 0u) return 1u;
+    mp3dec_init(&d);
+    p = SFX[0].mp3; left = SFX[0].len;
+    for (;;) {
+        if (left == 0u) return 2u;
+        n = mp3dec_decode_frame(&d, p, (int)left, pcm, &info);
+        if (info.frame_bytes <= 0) return 3u;
+        p += info.frame_bytes; left -= (uint32_t)info.frame_bytes;
+        if (n > 0) break;
     }
+    if ((uint32_t)info.hz != I2S_RATE_HZ) return 4u;
+    return 0u;
+}
+
+/*
+ * The first decoded samples, verbatim.
+ *
+ * Everything else about this decoder has been checked EXCEPT what it actually
+ * produces: rc=0 says it ran, info.hz says the file is 48 kHz, fail=0 says no
+ * frame was rejected. None of that says the audio is right. Printing raw
+ * samples lets the host compare them against ffmpeg's decode of the same file
+ * and settle whether the fault is upstream or downstream of this point.
+ */
+void sfx_dbg_first_samples(void (*emit)(int32_t v), uint32_t n)
+{
+    /* Skip past the leading silence - blaster.mp3 opens with 0.42 s of it, so
+     * the first frames are all zeros and prove nothing. 20 frames of 1152
+     * samples at 48 kHz is 0.48 s, comfortably into the signal. */
+    uint32_t skip = 20u;
+    mp3dec_t d;
+    mp3dec_frame_info_t info;
+    static int16_t pcm[MINIMP3_MAX_SAMPLES_PER_FRAME];
+    const uint8_t *p;
+    uint32_t left, i;
+    int got;
+
+    if (SFX_COUNT == 0u) return;
+    mp3dec_init(&d);
+    p = SFX[0].mp3; left = SFX[0].len;
+    for (;;) {
+        if (left == 0u) return;
+        got = mp3dec_decode_frame(&d, p, (int)left, pcm, &info);
+        if (info.frame_bytes <= 0) return;
+        p += info.frame_bytes; left -= (uint32_t)info.frame_bytes;
+        if (got > 0) { if (skip == 0u) break; skip--; }
+    }
+    for (i = 0u; i < n && i < (uint32_t)(got * info.channels); i++) emit(pcm[i]);
 }

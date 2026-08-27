@@ -27,7 +27,7 @@ GCCINC=$($CC -print-file-name=include)
 # report a failure, which is the exact defect the self-test exists to prevent.
 CFLAGS="-std=c99 -pedantic-errors -Wall -Wextra -Wshadow -Werror -Os -mlongcalls
         -ffreestanding -mtext-section-literals -ffunction-sections -fdata-sections -fno-builtin
-        -nostdinc -isystem $GCCINC -I$M/src"
+        -nostdinc -isystem $GCCINC -I$M/src -I$M/src/shim"
 LDFLAGS="-nostdlib -Wl,--gc-sections -Wl,-T,$M/link.ld -Wl,-Map,$M/build/fw.map"
 
 # ONE app is linked, chosen here. Every app defines `const app_t APP`, so they
@@ -40,7 +40,7 @@ APP="${APP:-gridvoid}"
 echo "app: $APP"
 
 mkdir -p "$M/build"
-$CC $CFLAGS -I"$M/apps" $LDFLAGS "$M"/src/*.c "$M/apps/$APP.c" -o "$M/build/fw.elf" -lgcc
+$CC $CFLAGS -I"$M/apps" $LDFLAGS "$M"/src/*.c "$M"/src/shim/*.c "$M/apps/$APP.c" -o "$M/build/fw.elf" -lgcc
 $SIZE "$M/build/fw.elf"
 esptool --chip esp32s3 elf2image --flash-mode dio --flash-freq 80m \
         --flash-size 16MB --output "$M/build/fw.bin" "$M/build/fw.elf" >/dev/null

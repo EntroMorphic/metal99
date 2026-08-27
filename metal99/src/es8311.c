@@ -95,17 +95,37 @@ static const struct { uint8_t reg, val, verify; } INIT[] = {
      * accepts every other register, reads them all back correctly, and
      * produces silence.
      */
-    { R_CLK1,   0x3Fu, 1 },
+    /*
+     * 0x30 FIRST - MCLK and BCLK only. The DAC and ADC block clocks come on
+     * later, in the second phase, once their dividers are set.
+     *
+     * The vendor splits this across open() and start() and the split is
+     * load-bearing: enabling a block's clock before configuring the dividers
+     * that feed it starts it running on whatever those registers happened to
+     * hold. This file wrote 0x3F here - all six clocks - and then configured
+     * REG02 through REG08 underneath a DAC that was already clocking.
+     */
+    { R_CLK1,   0x30u, 1 },
     { R_CLK2,   0x00u, 1 },   /* pre_div 1, pre_mult 1                      */
     { R_CLK3,   0x10u, 1 },   /* fs_mode 0 | adc_osr 0x10                   */
     { R_ADC16,  0x24u, 1 },
     /*
-     * 0x30, not 0x20. The vendor writes 0x10 here and then read-modify-writes
-     * the DAC oversampling ratio INTO it - so the final value is 0x10 | 0x20.
-     * Transcribing only the coefficient loses the base bits, and an oversample
-     * setting the DAC does not expect is a DAC that clocks and outputs nothing.
+     * DAC OVERSAMPLING, AND IT IS RATE-SPECIFIC. This is 0x10 | dac_osr, and
+     * dac_osr is 0x20 at 16 kHz but 0x10 at 48 kHz - so 0x30 and 0x10
+     * respectively.
+     *
+     * It sat at 0x30 while the sample rate was changed three times, from 15625
+     * to 31250 to 48000, because this file was written against the vendor's
+     * {4096000, 16000} coefficient row and nobody went back to it. The DAC was
+     * interpolating at twice the ratio the data arrived at, which is not
+     * silence and not distortion in any obvious place - it is audio that comes
+     * out sounding wrong in a way that survives fixing everything else.
+     *
+     * Every other coefficient in the 48 kHz row is identical to the 16 kHz
+     * one, which is exactly why it went unnoticed: the register dump looked
+     * plausible and read back clean.
      */
-    { R_CLK4,   0x30u, 1 },
+    { R_CLK4,   0x10u, 1 },
     { R_CLK5,   0x00u, 1 },   /* adc_div 1, dac_div 1                       */
     { R_CLK7,   0x00u, 1 },   /* lrck high byte                             */
     { R_CLK8,   0xFFu, 1 },   /* lrck low byte                              */
@@ -136,7 +156,9 @@ static const struct { uint8_t reg, val, verify; } INIT[] = {
      */
     { R_DAC31,  0x00u, 1 },
     { R_DAC32,  0x00u, 1 },   /* volume 0 - raised after the amp decision */
-    { R_SYS0D,  0x01u, 1 }    /* power up analog                            */
+    { R_SYS0D,  0x01u, 1 },   /* power up analog                            */
+    /* ...and only now the DAC and ADC block clocks, dividers already set. */
+    { R_CLK1,   0x3Fu, 1 }
 };
 
 void es8311_amp(int on)

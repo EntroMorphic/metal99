@@ -120,7 +120,24 @@ static gdma_desc VEC_ALIGN g_desc;
  * finished, which is exactly the signal that the half is safe to overwrite.
  * Refill it, hand it back, and the seam is silent.
  */
-static gdma_desc VEC_ALIGN g_ring[2];
+/*
+ * FOUR, not two.
+ *
+ * With two, the buffer we are handed to refill is the one the DMA just left -
+ * and it comes back to it immediately afterwards. If the owner bit is written
+ * back when a descriptor is FETCHED rather than when it is COMPLETED, that
+ * means we are writing the buffer being read, and the read head is never more
+ * than one buffer away in any case.
+ *
+ * A sine survives being torn like that; adjacent samples are nearly equal.
+ * Broadband content does not - which is exactly the split observed on this
+ * board, where a baked sine came out clean through the identical path that
+ * shredded the effects.
+ *
+ * Four buffers put at least one whole buffer between the write and the read.
+ */
+#define I2S_RING_N 4
+static gdma_desc VEC_ALIGN g_ring[I2S_RING_N];
 static int16_t  *g_ring_buf;
 static uint32_t  g_half_bytes;
 /*
@@ -196,19 +213,33 @@ int i2s_init(void)
     g_txconf = 0u;
 
     /*
-     * MCLK = XTAL / 10 = 4.000 MHz. clk_sel 0 is XTAL; the fractional fields
-     * X/Y/Z stay zero because the division is exact, which is the whole reason
-     * the sample rate is 15625 and not 16000.
+     * 48000 Hz EXACTLY, from the PLL, using the fractional divider.
+     *
+     *   PLL_160  160.000 MHz
+     *   / (13 + 1/48)     -> 12.288 MHz MCLK  = 256 * 48000
+     *   / 8               ->  1.536 MHz BCLK
+     *   / 32              -> 48.000 kHz LRCK
+     *
+     * The rate is not a choice any more: the sound effects are 48 kHz MP3s,
+     * decoded on the device and played untouched. Every earlier rate here -
+     * 15625, then 31250 - existed to make an integer divider work, and paid
+     * for it with a resample the source did not survive.
+     *
+     * The X/Y/Z encoding of a fraction b/a, from IDF: for b <= a/2,
+     * x = a/b - 1, y = a % b, z = b, yn1 = 0. With b/a = 1/48 that is
+     * x=47, y=0, z=1.
      */
-    I2S_TX_CLKM_DIV_CONF = 0u;
+    I2S_TX_CLKM_DIV_CONF = (47u << TX_CLKM_DIV_X_S)
+                         | (0u  << TX_CLKM_DIV_Y_S)
+                         | (1u  << TX_CLKM_DIV_Z_S);
     /*
      * I2S_CLK_EN (bit 29) is the module's master clock gate and it is separate
      * from both SYSTEM_I2S0_CLK_EN and TX_CLK_ACTIVE. Without it every divider
      * is configured correctly and no clock leaves the chip: measured MCLK=0
      * edges, WS=0, BCLK=20 over 2 ms where 2000 were expected.
      */
-    I2S_TX_CLKM_CONF = (5u << TX_CLKM_DIV_NUM_S)
-                     | (0u  << TX_CLK_SEL_S)
+    I2S_TX_CLKM_CONF = (13u << TX_CLKM_DIV_NUM_S)
+                     | (2u  << TX_CLK_SEL_S)   /* 2 = PLL_160M, 0 = XTAL */
                      | TX_CLK_ACTIVE
                      | I2S_CLK_EN;
 
@@ -363,12 +394,12 @@ int i2s_play_ring(int16_t *buf, uint32_t frames_half)
     g_ring_buf   = buf;
     g_half_bytes = bytes;
 
-    g_ring[0].dw0 = GDMA_DW0(bytes, bytes, 1);
-    g_ring[0].buffer = buf;
-    g_ring[0].next = &g_ring[1];
-    g_ring[1].dw0 = GDMA_DW0(bytes, bytes, 1);
-    g_ring[1].buffer = (const uint8_t *)buf + bytes;
-    g_ring[1].next = &g_ring[0];
+    { int i;
+      for (i = 0; i < I2S_RING_N; i++) {
+          g_ring[i].dw0    = GDMA_DW0(bytes, bytes, 1);
+          g_ring[i].buffer = (const uint8_t *)buf + (uint32_t)i * bytes;
+          g_ring[i].next   = &g_ring[(i + 1) % I2S_RING_N];
+      } }
 
     GDMA_OUT_INT_CLR_CH1 = 0xFFFFFFFFu;
     GDMA_OUT_LINK_CH1 = (uint32_t)(uintptr_t)&g_ring[0] & OUTLINK_ADDR_MASK;
@@ -398,7 +429,7 @@ int i2s_play_ring(int16_t *buf, uint32_t frames_half)
 int i2s_ring_claim(int16_t **out)
 {
     int i;
-    for (i = 0; i < 2; i++) {
+    for (i = 0; i < I2S_RING_N; i++) {
         if ((g_ring[i].dw0 & (1u << 31)) == 0u) {
             *out = (int16_t *)((uint8_t *)g_ring_buf + (uint32_t)i * g_half_bytes);
             return i;
@@ -409,7 +440,7 @@ int i2s_ring_claim(int16_t **out)
 
 void i2s_ring_release(int half)
 {
-    if (half < 0 || half > 1) return;
+    if (half < 0 || half >= I2S_RING_N) return;
     g_ring[half].dw0 = GDMA_DW0(g_half_bytes, g_half_bytes, 1);
 }
 
@@ -418,8 +449,12 @@ void i2s_ring_release(int half)
  * merely audible. */
 uint32_t i2s_underruns(void)
 {
-    return ((g_ring[0].dw0 & (1u << 31)) == 0u &&
-            (g_ring[1].dw0 & (1u << 31)) == 0u) ? 1u : 0u;
+    int i, free_n = 0;
+    for (i = 0; i < I2S_RING_N; i++)
+        if ((g_ring[i].dw0 & (1u << 31)) == 0u) free_n++;
+    /* Every buffer free means the DMA caught up entirely and has been
+     * replaying. One or two free is normal - that is the refill window. */
+    return (free_n >= I2S_RING_N) ? 1u : 0u;
 }
 
 void i2s_stop(void)

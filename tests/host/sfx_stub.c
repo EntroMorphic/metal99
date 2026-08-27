@@ -26,6 +26,9 @@ uint32_t sfx_fills(void)       { return 0u; }
 void sfx_play_pcm(const int16_t *p, uint32_t n) { (void)p; (void)n; }
 uint32_t sfx_selftest(void)    { return 0u; }
 uint32_t sfx_starved(void)     { return 0u; }
+uint32_t sfx_decodes(void)     { return 0u; }
+uint32_t sfx_decode_fail(void) { return 0u; }
+void sfx_dbg_first_samples(void (*e)(int32_t), uint32_t n) { (void)e; (void)n; }
 
 /*
  * Console stubs. gridvoid reports sfx_init's result over the serial console,
