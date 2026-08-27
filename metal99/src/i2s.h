@@ -64,6 +64,18 @@ int i2s_play_loop(const int16_t *frames, uint32_t nframes);
 uint32_t i2s_service(void);
 uint32_t i2s_rearms(void);
 
+/*
+ * Continuous playback over a two-descriptor ring: `buf` holds 2*frames_half
+ * stereo frames, and the hardware alternates halves.
+ *
+ * i2s_ring_claim() returns the half the DMA has finished with, or NULL if both
+ * are still in flight; fill it and call i2s_ring_release(). That pairing is
+ * what a mixer needs and a single looping descriptor cannot give.
+ */
+int      i2s_play_ring(int16_t *buf, uint32_t frames_half);
+int16_t *i2s_ring_claim(void);
+void     i2s_ring_release(void);
+
 /* Stop the transmitter and let the line idle. */
 void i2s_stop(void);
 

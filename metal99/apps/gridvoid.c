@@ -23,6 +23,7 @@
 #include "app.h"
 #include "vg.h"
 #include "tile.h"
+#include "sfx.h"
 #include "trig.h"
 #include "sh8601.h"
 #include "spi2.h"
@@ -212,10 +213,19 @@ static void spawn(void)
     }
 }
 
+static int g_audio_ready;
+
 static void game_init(void)
 {
     int i;
     g_scroll = 0;
+    /*
+     * ONCE. game_init also runs on death, and bringing the codec up again
+     * mid-game would stop the DMA ring, re-run 29 I2C writes and pop the
+     * amplifier - all to arrive back where it already was.
+     */
+    if (!g_audio_ready) { g_audio_ready = (sfx_init() == 0); }
+
     C_GRID = sh8601_rgb565(0, 110, 170);
     C_HOT  = sh8601_rgb565(90, 230, 255);
     for (i = 0; i < MAX_FOE; i++) g_foe[i].alive = 0;
@@ -260,6 +270,7 @@ static void game_event(const ui_event *e)
     if (e->kind != UI_PRESS) return;
 
     g_tracer = TRACER_F; g_tx = (int)e->x; g_ty = (int)e->y;
+    sfx_play(SFX_FIRE);
 
     /*
      * Nearest craft to the shot, in SCREEN space - the player aims at what they
@@ -289,6 +300,7 @@ static void game_event(const ui_event *e)
         g_combo++;
         /* Nearer craft are worth less: letting one close is the easy shot. */
         g_score += 10 * g_combo;
+        sfx_play(SFX_KILL);
     } else {
         g_combo = 0;                            /* a miss breaks the chain */
     }
@@ -388,6 +400,13 @@ static int game_frame(uint32_t f)
      * constants on the vg path encode a belief that is now known to be
      * incomplete, and nobody should build on either one. See DESIGN.md 11.4.
      */
+    /*
+     * Refill the audio ring BEFORE presenting. Presenting is the long pole -
+     * 15 ms of transmit - and the DMA keeps reading throughout it. Servicing
+     * after would leave the mixer a shrinking slice of the frame to work in,
+     * and an underrun is audible where a late refill is not.
+     */
+    sfx_service();
     return tile_present(vg_rowfn);
 }
 

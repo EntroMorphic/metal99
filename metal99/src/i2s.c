@@ -109,6 +109,19 @@
  * indistinguishable from "nothing works" if you are not expecting it.
  */
 static gdma_desc VEC_ALIGN g_desc;
+
+/*
+ * A TWO-DESCRIPTOR RING for continuous audio.
+ *
+ * The single self-looping descriptor is fine for a fixed tone, but a mixer has
+ * to write new samples while the hardware reads. Two descriptors over two
+ * halves of one buffer give that: GDMA clears the owner bit on the half it has
+ * finished, which is exactly the signal that the half is safe to overwrite.
+ * Refill it, hand it back, and the seam is silent.
+ */
+static gdma_desc VEC_ALIGN g_ring[2];
+static int16_t  *g_ring_buf;
+static uint32_t  g_half_bytes;
 /*
  * SHADOW OF TX_CONF, and it is not a convenience.
  *
@@ -324,6 +337,57 @@ int i2s_play_loop(const int16_t *frames, uint32_t nframes)
     g_txconf |= TX_START;
     tx_apply();
     return I2S_OK;
+}
+
+int i2s_play_ring(int16_t *buf, uint32_t frames_half)
+{
+    uint32_t bytes = frames_half * I2S_CHANNELS * 2u;
+    if (buf == NULL || bytes == 0u || bytes > GDMA_MAX_XFER) return I2S_E_HANG;
+
+    i2s_stop();
+    g_ring_buf   = buf;
+    g_half_bytes = bytes;
+
+    g_ring[0].dw0 = GDMA_DW0(bytes, bytes, 1);
+    g_ring[0].buffer = buf;
+    g_ring[0].next = &g_ring[1];
+    g_ring[1].dw0 = GDMA_DW0(bytes, bytes, 1);
+    g_ring[1].buffer = (const uint8_t *)buf + bytes;
+    g_ring[1].next = &g_ring[0];
+
+    GDMA_OUT_INT_CLR_CH1 = 0xFFFFFFFFu;
+    GDMA_OUT_LINK_CH1 = (uint32_t)(uintptr_t)&g_ring[0] & OUTLINK_ADDR_MASK;
+    GDMA_OUT_LINK_CH1 = OUTLINK_START
+                      | ((uint32_t)(uintptr_t)&g_ring[0] & OUTLINK_ADDR_MASK);
+
+    I2S_TX_CONF = g_txconf | TX_RESET | TX_FIFO_RESET;
+    I2S_TX_CONF = g_txconf;
+    tx_apply();
+    g_txconf |= TX_START;
+    tx_apply();
+    return I2S_OK;
+}
+
+int16_t *i2s_ring_claim(void)
+{
+    uint32_t i;
+    for (i = 0u; i < 2u; i++) {
+        if ((g_ring[i].dw0 & (1u << 31)) == 0u) {
+            /* Hardware has finished with this half. Hand it to the caller and
+             * re-arm afterwards - the owner bit going back is what makes the
+             * ring continue rather than starve. */
+            return (int16_t *)((uint8_t *)g_ring_buf + i * g_half_bytes);
+        }
+    }
+    return NULL;
+}
+
+void i2s_ring_release(void)
+{
+    uint32_t i;
+    for (i = 0u; i < 2u; i++)
+        if ((g_ring[i].dw0 & (1u << 31)) == 0u)
+            g_ring[i].dw0 = GDMA_DW0(g_half_bytes, g_half_bytes, 1);
 }
 
 void i2s_stop(void)

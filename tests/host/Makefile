@@ -34,7 +34,7 @@ gfx_png: gfx_png.c gfx_stubs.c ../../metal99/src/gfx.c ../../metal99/src/elide.c
          ../../metal99/src/font_share.c vec_host.c $(FOLD) $(RGB) $(HDRS)
 	$(CC) $(CFLAGS) $(filter %.c,$^) -o $@
 
-game_png: game_png.c ../../metal99/apps/gridvoid.c ../../metal99/src/vg.c \
+game_png: game_png.c sfx_stub.c ../../metal99/apps/gridvoid.c ../../metal99/src/vg.c \
           ../../metal99/src/trig.c ../../metal99/src/elide.c ../../metal99/src/tile.c \
           vec_host.c $(RGB) $(HDRS)
 	$(CC) $(CFLAGS) $(filter %.c,$^) -o $@
@@ -68,12 +68,12 @@ ASAN := $(shell echo 'int main(void){return 0;}' > /tmp/.asan$$$$.c && \
          $(CC) -fsanitize=address /tmp/.asan$$$$.c -o /dev/null 2>/dev/null && \
          echo -fsanitize=address; rm -f /tmp/.asan$$$$.c)
 
-tile_test: tile_test.c ../../metal99/apps/gridvoid.c ../../metal99/src/vg.c \
+tile_test: tile_test.c sfx_stub.c ../../metal99/apps/gridvoid.c ../../metal99/src/vg.c \
            ../../metal99/src/trig.c ../../metal99/src/elide.c ../../metal99/src/tile.c \
            vec_host.c $(RGB) $(HDRS)
 	$(CC) $(CFLAGS) $(filter %.c,$^) -o $@
 
-game_test: game_test.c ../../metal99/apps/gridvoid.c ../../metal99/src/vg.c \
+game_test: game_test.c sfx_stub.c ../../metal99/apps/gridvoid.c ../../metal99/src/vg.c \
            ../../metal99/src/trig.c ../../metal99/src/elide.c ../../metal99/src/tile.c \
            vec_host.c $(RGB) $(HDRS)
 	$(CC) $(CFLAGS) $(ASAN) $(filter %.c,$^) -o $@
