@@ -24,6 +24,7 @@
 #include "vg.h"
 #include "tile.h"
 #include "sfx.h"
+#include "io.h"
 #include "trig.h"
 #include "sh8601.h"
 #include "spi2.h"
@@ -40,7 +41,16 @@
                               * top few rows and leaves the floor bare. */
 #define CELL     52          /* world units between grid lines */
 #define LANES    8           /* longitudinal lines each side of centre */
-#define RUNGS    12          /* transverse lines in flight at once */
+/*
+ * 20, and the count is a picture decision rather than a budget one.
+ *
+ * Rungs are evenly spaced in the WORLD, so the near ones are always sparse on
+ * screen - that is perspective working. With 12 the nearest landed at z=87,
+ * two thirds down the panel, and the bottom third had no floor at all. 20 puts
+ * the nearest at Z_NEAR itself, which projects BELOW the panel and is clipped,
+ * so the floor runs off the bottom edge the way a floor should.
+ */
+#define RUNGS    20          /* transverse lines in flight at once */
 
 #define MAX_FOE  8
 #define FOE_R    26          /* world half-size of a craft            */
@@ -91,19 +101,32 @@ static void grid(void)
     for (k = -LANES; k <= LANES; k++) lane(k * CELL);
 
     /*
-     * Rungs flow toward the viewer and wrap.
+     * Rungs flow toward the viewer and wrap, EVENLY SPACED IN THE WORLD.
      *
-     * Spaced by INVERSE depth, not by depth. Even spacing in z sends most of
-     * them to the horizon, because perspective compresses by 1/z - the first
-     * cut did that and left the near floor empty. Stepping 1/z evenly puts
-     * them at even distances on SCREEN, which is what reads as motion.
+     * That is the whole of perspective here: projy is HORIZON + k/z, so equal
+     * steps in z come out bunched near the horizon and spread apart near the
+     * viewer. Gaps measured across the screen run 2, 2, 2, 4, 5, 7, 9, 15, 24,
+     * 47 pixels - which is what a receding floor looks like.
+     *
+     * THIS FILE USED TO STEP 1/z EVENLY, and said so in a comment that
+     * described the bug as the intent: "stepping 1/z evenly puts them at even
+     * distances on SCREEN, which is what reads as motion". Even screen spacing
+     * is a ladder, not a floor - every gap measured 22 to 26 pixels, top to
+     * bottom, with no depth cue at all.
+     *
+     * The reason it got there is recorded too: an earlier cut spaced them in z,
+     * found the near floor sparse, and flattened the perspective to fill it.
+     * Sparse near-field IS what perspective does. The fix for a thin floor is
+     * more rungs, not less depth - RUNGS is the knob.
      */
     for (i = 0; i < RUNGS; i++) {
-        int32_t inv0 = TRIG_ONE / Z_FAR, inv1 = TRIG_ONE / Z_NEAR;
-        int32_t t = ((int32_t)i * TRIG_ONE) / RUNGS + g_scroll;
-        int32_t z;
-        t = ((t % TRIG_ONE) + TRIG_ONE) % TRIG_ONE;
-        z = TRIG_ONE / (inv0 + ((inv1 - inv0) * t) / TRIG_ONE);
+        int32_t span = (int32_t)(Z_FAR - Z_NEAR);
+        int32_t step = span / RUNGS;
+        int32_t off  = (int32_t)(((g_scroll % TRIG_ONE) * step) / TRIG_ONE);
+        /* Subtract the scroll so rungs travel TOWARD the viewer. Modulo of a
+         * value that can go negative is normalised, not left to chance. */
+        int32_t p    = (((int32_t)i * step - off) % span + span) % span;
+        int32_t z    = (int32_t)Z_NEAR + p;
         if (z < Z_NEAR) z = Z_NEAR;
         if (z > Z_FAR)  z = Z_FAR;
         vg_line(projx(-LANES * CELL, (int)z), projy(0, (int)z),
@@ -224,7 +247,11 @@ static void game_init(void)
      * mid-game would stop the DMA ring, re-run 29 I2C writes and pop the
      * amplifier - all to arrive back where it already was.
      */
-    if (!g_audio_ready) { g_audio_ready = (sfx_init() == 0); }
+    if (!g_audio_ready) {
+        int arc = sfx_init();
+        g_audio_ready = (arc == 0);
+        con_puts("  sfx_init rc="); con_dec((int32_t)arc); con_puts("\r\n");
+    }
 
     C_GRID = sh8601_rgb565(0, 110, 170);
     C_HOT  = sh8601_rgb565(90, 230, 255);

@@ -16,7 +16,7 @@
 
 #include <stdint.h>
 
-typedef struct { const int8_t *pcm; uint32_t len; } sfx_clip;
+typedef struct { const int16_t *pcm; uint32_t len; } sfx_clip;
 
 extern const sfx_clip SFX[];
 extern const uint32_t SFX_COUNT;
@@ -47,5 +47,11 @@ void sfx_service(void);
 /* 0..255. Applied to the mix, not to the codec - so it can change per frame
  * without touching I2C. */
 void sfx_volume(uint8_t v);
+
+/*
+ * Halves the mixer has actually filled. Zero while the game runs means the ring
+ * never hands one over - the failure that silence looks like from outside.
+ */
+uint32_t sfx_fills(void);
 
 #endif /* SFX_H */

@@ -22,3 +22,17 @@ int  sfx_init(void)            { return 0; }
 void sfx_volume(uint8_t v)     { (void)v; }
 void sfx_service(void)         { }
 void sfx_play(uint32_t clip)   { if (clip < 2u) sfx_stub_plays[clip]++; }
+uint32_t sfx_fills(void)       { return 0u; }
+
+/*
+ * Console stubs. gridvoid reports sfx_init's result over the serial console,
+ * which is the right place for it on the device and does not exist here.
+ * Printing to stdout instead would bury the harnesses' own output in noise
+ * from 6000 frames of gameplay.
+ */
+#include <stdio.h>
+void con_puts(const char *s)  { (void)s; }
+void con_dec(int32_t v)       { (void)v; }
+void con_hex32(uint32_t v)    { (void)v; }
+
+uint32_t i2s_underruns(void) { return 0u; }

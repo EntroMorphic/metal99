@@ -18,10 +18,24 @@
  */
 static int16_t VEC_ALIGN g_buf[HALF_FRAMES * 2u * I2S_CHANNELS];
 
-typedef struct { const int8_t *pcm; uint32_t len, pos; } voice;
+typedef struct { const int16_t *pcm; uint32_t len, pos; } voice;
 static voice g_voice[SFX_VOICES];
-static uint8_t g_vol = 160u;
+/*
+ * 22, which is about 8% of full scale for a single voice.
+ *
+ * Not a taste decision - a measured one. The first 8-bit build multiplied
+ * peak-127 samples by 20, landing at 7.8% of the DAC's range, and it sounded
+ * clean. Moving to 16-bit samples with a half-scale mix made the same effects
+ * SIX TIMES louder, and they sounded worse: not less resolution, more
+ * distortion, from a small speaker driven past where it stays linear.
+ *
+ * Level and quality are easy to confuse when only one of them changed on
+ * purpose. This restores the level that worked and keeps the resolution that
+ * was the point.
+ */
+static uint8_t g_vol = 22u;
 static int g_up;                  /* audio available at all? */
+static uint32_t g_fills;          /* halves actually mixed - 0 means starved */
 
 int sfx_init(void)
 {
@@ -47,6 +61,7 @@ int sfx_init(void)
 }
 
 void sfx_volume(uint8_t v) { g_vol = v; }
+uint32_t sfx_fills(void)   { return g_fills; }
 
 void sfx_play(uint32_t clip)
 {
@@ -70,12 +85,16 @@ void sfx_service(void)
 {
     int16_t *half;
     uint32_t f, v;
+    int idx;
 
     if (!g_up) return;
 
-    half = i2s_ring_claim();
-    if (half == NULL) return;             /* both halves still in flight */
-
+    /*
+     * Fill EVERY free half, not just one. At 40 Hz a frame is 25 ms and a half
+     * is 30.7 ms, so one is normally enough - but a single late frame leaves
+     * both free, and filling one of them would hand the other back stale.
+     */
+    while ((idx = i2s_ring_claim(&half)) >= 0) {
     for (f = 0u; f < HALF_FRAMES; f++) {
         int32_t acc = 0;
         for (v = 0u; v < SFX_VOICES; v++) {
@@ -84,16 +103,18 @@ void sfx_service(void)
             if (++g_voice[v].pos >= g_voice[v].len) g_voice[v].len = 0u;
         }
         /*
-         * 8-bit samples scaled to 16-bit and then by volume. Clipped rather
-         * than wrapped: four voices at full scale can exceed the range, and
+         * Volume as a 0..255 fraction of unity, so 128 is half scale. Clipped
+         * rather than wrapped: four voices can sum past the range, and
          * wrapping turns a loud moment into a burst of noise that sounds like
-         * a hardware fault rather than a mix that is too hot.
+         * a hardware fault rather than a mix that is simply too hot.
          */
-        acc = (acc * (int32_t)g_vol) >> 3;
+        acc = (acc * (int32_t)g_vol) >> 8;
         if (acc >  32767) acc =  32767;
         if (acc < -32768) acc = -32768;
         half[f * 2u]      = (int16_t)acc;
         half[f * 2u + 1u] = (int16_t)acc;
     }
-    i2s_ring_release();
+    g_fills++;
+    i2s_ring_release(idx);
+    }
 }

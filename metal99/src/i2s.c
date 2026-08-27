@@ -68,6 +68,7 @@
  * which is exactly the symptom gdma.c already documents.
  */
 #define OUT_RST               (1u << 0)
+#define OUT_AUTO_WRBACK       (1u << 2)   /* write descriptors back to RAM */
 #define OUT_EOF_MODE          (1u << 3)
 #define OUT_DATA_BURST_EN     (1u << 5)
 #define OUTLINK_STOP          (1u << 20)
@@ -276,7 +277,21 @@ int i2s_init(void)
 
     GDMA_OUT_CONF0_CH1 = OUT_RST;
     GDMA_OUT_CONF0_CH1 = 0u;
-    GDMA_OUT_CONF0_CH1 = OUT_DATA_BURST_EN | OUT_EOF_MODE;
+    /*
+     * OUT_AUTO_WRBACK, and it is what makes the ring work at all.
+     *
+     * GDMA clears a descriptor's owner bit in its own copy when it finishes,
+     * but by default it never writes the descriptor BACK to memory - so the
+     * copy the CPU reads keeps the owner bit set forever. i2s_ring_claim()
+     * asks exactly that question, so it always answered "still in flight", the
+     * mixer was never handed a half to fill, and the buffer stayed the zeros
+     * it was initialised with. Perfect clocks, perfect codec, silence.
+     *
+     * Channel 0 never needed this because gdma_wait() polls the interrupt
+     * status rather than the descriptor - which is why the bit had never come
+     * up in this project before.
+     */
+    GDMA_OUT_CONF0_CH1 = OUT_DATA_BURST_EN | OUT_EOF_MODE | OUT_AUTO_WRBACK;
     GDMA_OUT_PERI_SEL_CH1 = PERI_I2S0;
     return I2S_OK;
 }
@@ -368,26 +383,43 @@ int i2s_play_ring(int16_t *buf, uint32_t frames_half)
     return I2S_OK;
 }
 
-int16_t *i2s_ring_claim(void)
+/*
+ * Claim a specific half, by index, and release that same one.
+ *
+ * The first version claimed "the first free half" and released "every free
+ * half", which is a bug with an audible signature. On any underrun BOTH halves
+ * are free: the caller fills one, release re-arms both, and the DMA replays a
+ * half still holding audio from a previous pass. Repeated fragments - a bag of
+ * rocks - and the more the mixer falls behind, the worse it gets.
+ *
+ * Claim and release now name the same half, so a buffer can only be handed
+ * back after it has actually been written.
+ */
+int i2s_ring_claim(int16_t **out)
 {
-    uint32_t i;
-    for (i = 0u; i < 2u; i++) {
+    int i;
+    for (i = 0; i < 2; i++) {
         if ((g_ring[i].dw0 & (1u << 31)) == 0u) {
-            /* Hardware has finished with this half. Hand it to the caller and
-             * re-arm afterwards - the owner bit going back is what makes the
-             * ring continue rather than starve. */
-            return (int16_t *)((uint8_t *)g_ring_buf + i * g_half_bytes);
+            *out = (int16_t *)((uint8_t *)g_ring_buf + (uint32_t)i * g_half_bytes);
+            return i;
         }
     }
-    return NULL;
+    return -1;
 }
 
-void i2s_ring_release(void)
+void i2s_ring_release(int half)
 {
-    uint32_t i;
-    for (i = 0u; i < 2u; i++)
-        if ((g_ring[i].dw0 & (1u << 31)) == 0u)
-            g_ring[i].dw0 = GDMA_DW0(g_half_bytes, g_half_bytes, 1);
+    if (half < 0 || half > 1) return;
+    g_ring[half].dw0 = GDMA_DW0(g_half_bytes, g_half_bytes, 1);
+}
+
+/* Both halves free means the mixer did not keep up and the DMA has been
+ * replaying whatever was there. Counted so starvation is visible rather than
+ * merely audible. */
+uint32_t i2s_underruns(void)
+{
+    return ((g_ring[0].dw0 & (1u << 31)) == 0u &&
+            (g_ring[1].dw0 & (1u << 31)) == 0u) ? 1u : 0u;
 }
 
 void i2s_stop(void)
