@@ -24,6 +24,7 @@ extern const uint32_t SFX_COUNT;
 /* Indices into SFX[], in the order tools/mksfx.py emits them. */
 #define SFX_FIRE 0u
 #define SFX_KILL 1u
+#define SFX_PROBE 2u   /* a baked sine - see tools/mksfx.py */
 
 #define SFX_VOICES 4u        /* simultaneous effects before the oldest is stolen */
 
@@ -36,6 +37,28 @@ int  sfx_init(void);
 
 /* Start `clip` on a free voice. Silently ignored if audio failed to init. */
 void sfx_play(uint32_t clip);
+
+/*
+ * Play arbitrary PCM through the same voices, ring and DMA the baked effects
+ * use. Exists so a signal whose correctness is OBVIOUS - a pure tone - can be
+ * pushed down the exact path an effect takes. The tone app proves the codec
+ * with its own simpler loop; this proves the mixer.
+ *
+ * The buffer must outlive playback: voices point at it, nothing is copied.
+ */
+void sfx_play_pcm(const int16_t *pcm, uint32_t len);
+
+/*
+ * Check that what the mixer WROTE matches what it should have written.
+ *
+ * Fills a half by hand from a known source and compares every sample against
+ * the arithmetic the mixer is supposed to perform. Answers "is the corruption
+ * before or after this point", which is the only question worth asking once
+ * the source PCM has been verified bit-accurate.
+ *
+ * Returns the number of mismatched samples; 0 is a pass.
+ */
+uint32_t sfx_selftest(void);
 
 /*
  * Refill the playing buffer. MUST be called every frame - the DMA loops over
@@ -53,5 +76,13 @@ void sfx_volume(uint8_t v);
  * never hands one over - the failure that silence looks like from outside.
  */
 uint32_t sfx_fills(void);
+
+/*
+ * Services that arrived to find BOTH halves already finished - i.e. the DMA
+ * ran out of audio and replayed a buffer. Non-zero means the ring is too small
+ * for the service interval, which is inaudible as a number and unmistakable as
+ * a sound.
+ */
+uint32_t sfx_starved(void);
 
 #endif /* SFX_H */

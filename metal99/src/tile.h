@@ -59,7 +59,17 @@
  * anything that misbehaved.
  */
 #define TILE_W 8
-#define TILE_H 8
+/*
+ * 16, traded for audio bandwidth. At 8 the hash table is 80 KB and the scheme
+ * sends 27.6% of pixels; at 16 it is 40 KB and 47.8%. That is a real loss, and
+ * it buys doubling the sample rate from 15625 to 31250 - which the effects
+ * needed and the frame budget did not: 9.3 ms typical against 25 ms.
+ *
+ * Memory is the scarce resource in this image, not time. Spending it on the
+ * thing that sounds wrong rather than the thing that already fits is the
+ * trade, and it is reversible in one constant if that ever changes.
+ */
+#define TILE_H 16
 
 /*
  * Rolling resync: one tile ROW is retransmitted unconditionally each frame, so

@@ -13,30 +13,64 @@ bandwidth of 15625 Hz sampling loses almost nothing, and the audible damage was
 all quantisation. 8-bit is ~48 dB SNR with no dither, which is grit on every
 decay tail. 67 KB against ~121 KB free is affordable; sounding wrong is not.
 
-15625 Hz because that is what the hardware produces exactly: XTAL/10 for MCLK,
-then /8 and /32. Asking for 16 kHz would need a fractional divider to land
-2.3% away from a rate every divider hits on the nose (see i2s.h).
+31250 Hz because that is what the hardware produces exactly - XTAL/5 for MCLK,
+then /8 and /32 - and because 15625 was audibly not enough. See i2s.h: the
+effects were rough while a tone through the same path was clean, and the cause
+was bandwidth rather than anything in the pipeline.
 
   ./tools/mksfx.py --list        what would be generated
   ./tools/mksfx.py               regenerate metal99/src/sfx_data.c
 """
 import argparse, os, struct, subprocess, sys, textwrap
 
-RATE = 15625
+RATE = 31250
 SRC = os.path.expanduser("~/Projects/002-business/inlikeflynn-io/assets/audio/sfx")
+LOCAL = os.path.join(os.path.dirname(__file__), "sfx_src")
 OUT = os.path.join(os.path.dirname(__file__), "..", "metal99", "src", "sfx_data.c")
 
 # name in C, source file, trim to seconds (None = whole file)
 EFFECTS = [
     ("SFX_FIRE",  "blaster.mp3",      None),
     ("SFX_KILL",  "direct-hit-1.mp3", None),
+    # A KNOWN-GOOD SIGNAL THROUGH THE SAME PIPELINE. Every diagnostic tone so
+    # far was generated at runtime, which tests the mixer and DMA but skips
+    # decode, resample, filter, normalise and the C array entirely. If this
+    # comes out clean and the effects do not, the pipeline is exonerated and
+    # the fault is the content or the speaker. If it comes out rough, the
+    # pipeline is the fault and no amount of source work would ever have fixed
+    # it. Local file, so it is reproducible from this repo alone.
+    ("SFX_PROBE", "probe-sine.wav",   None),
 ]
 
 
+# The speaker on this board is a ~10 mm driver. Below roughly this frequency it
+# does not reproduce, it EXCURSES - the cone hits its limit and the result is a
+# rattle rather than a note.
+HIGHPASS_HZ = 450
+
+
 def decode(path, limit):
-    """MP3 -> mono 15625 Hz signed 8-bit, via ffmpeg."""
+    """MP3 -> mono, RATE Hz, signed 16-bit, high-passed, via ffmpeg.
+
+    THE HIGH-PASS IS THE WHOLE POINT and it took an embarrassing amount of
+    measuring to find. These effects are sub-bass: 49% of the blaster and 97%
+    of the direct hit sit between 20 and 150 Hz, because they were mixed for
+    headphones and desktop speakers where that is the impact. Played through a
+    10 mm driver it is not impact, it is a cone slapping its endstops - which
+    sounds exactly like raking rocks, and is not a defect in any of the code it
+    passes through on the way.
+
+    Every diagnostic tone this project used sat at 488 Hz, comfortably above
+    the problem band, which is why the path kept certifying clean while the
+    effects did not.
+
+    Two poles, so the rolloff is steep enough to actually remove the content
+    rather than merely tilt it.
+    """
     cmd = ["ffmpeg", "-v", "error", "-i", path,
-           "-ac", "1", "-ar", str(RATE), "-f", "s16le", "-"]
+           "-ac", "1",
+           "-af", f"highpass=f={HIGHPASS_HZ}:poles=2,highpass=f={HIGHPASS_HZ}:poles=2",
+           "-ar", str(RATE), "-f", "s16le", "-"]
     if limit:
         cmd[4:4] = ["-t", str(limit)]
     out = subprocess.run(cmd, capture_output=True, check=True).stdout
@@ -83,6 +117,9 @@ def normalise(clips):
     still using the available range.
     """
     peak = max((max(abs(v) for v in c) for c in clips if c), default=1) or 1
+    # After the high-pass most of the original energy is gone, so this is what
+    # brings the remainder back to a usable level. Normalising BEFORE filtering
+    # would have scaled to a peak that is about to be thrown away.
     g = 30000  # leave headroom; four voices can sum
     return [[max(-32768, min(32767, (v * g) // peak)) for v in c] for c in clips]
 
@@ -95,12 +132,15 @@ def main():
     if args.list:
         for name, f, limit in EFFECTS:
             p = os.path.join(SRC, f)
+            if not os.path.exists(p): p = os.path.join(LOCAL, f)
             print(f"  {name:10s} {f:22s} {'present' if os.path.exists(p) else 'MISSING'}")
         return 0
 
     raw = []
     for name, fname, limit in EFFECTS:
         path = os.path.join(SRC, fname)
+        if not os.path.exists(path):
+            path = os.path.join(LOCAL, fname)
         if not os.path.exists(path):
             sys.exit(f"missing source: {path}")
         raw.append(trim(to_s16(decode(path, limit)), name))

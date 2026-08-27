@@ -12,11 +12,14 @@
  *     / 8            500  kHz  BCLK
  *     / 32         15.625 kHz  LRCK   = the sample rate
  *
- * Every divider is an integer. Asking for exactly 16 kHz needs 40/4.096 =
- * 9.7656, and the fractional divider that requires is three more registers of
- * encoding to get a rate 2.3% different from this one - inaudible on a laser
- * and an explosion. If a future caller genuinely needs 16 kHz, the fractional
- * path is where to spend that complexity, not here.
+ * Every divider is an integer, and the rate DOUBLED from 15625 for a reason
+ * that took an instrument to find. Effects sounded rough while a pure tone
+ * through the identical mixer, ring and DMA was clean, and the baked PCM was
+ * verified bit-accurate against the source - so the fault was neither the data
+ * nor the path. It was bandwidth: 15625 Hz gives 7.8 kHz, and 94% of these
+ * effects' ENERGY sits below 4 kHz, which is what made that look safe. Energy
+ * is not perception. A laser and an explosion live on the high-frequency
+ * transient, and band-limiting to 7.8 kHz takes exactly that away.
  *
  * The codec does not care: in slave mode it follows MCLK and LRCK, and all its
  * coefficient row asserts is that MCLK/LRCK is 256. That still holds.
@@ -28,7 +31,7 @@
 
 #include <stdint.h>
 
-#define I2S_RATE_HZ   15625u
+#define I2S_RATE_HZ   31250u
 #define I2S_CHANNELS  2u             /* the codec expects stereo frames */
 
 #define I2S_OK          0

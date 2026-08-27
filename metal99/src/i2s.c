@@ -207,7 +207,7 @@ int i2s_init(void)
      * is configured correctly and no clock leaves the chip: measured MCLK=0
      * edges, WS=0, BCLK=20 over 2 ms where 2000 were expected.
      */
-    I2S_TX_CLKM_CONF = (10u << TX_CLKM_DIV_NUM_S)
+    I2S_TX_CLKM_CONF = (5u << TX_CLKM_DIV_NUM_S)
                      | (0u  << TX_CLK_SEL_S)
                      | TX_CLK_ACTIVE
                      | I2S_CLK_EN;

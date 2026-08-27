@@ -23,6 +23,9 @@ void sfx_volume(uint8_t v)     { (void)v; }
 void sfx_service(void)         { }
 void sfx_play(uint32_t clip)   { if (clip < 2u) sfx_stub_plays[clip]++; }
 uint32_t sfx_fills(void)       { return 0u; }
+void sfx_play_pcm(const int16_t *p, uint32_t n) { (void)p; (void)n; }
+uint32_t sfx_selftest(void)    { return 0u; }
+uint32_t sfx_starved(void)     { return 0u; }
 
 /*
  * Console stubs. gridvoid reports sfx_init's result over the serial console,

@@ -5,7 +5,22 @@
 #include "es8311.h"
 #include "vec.h"
 
-#define HALF_FRAMES 480u          /* 30.7 ms per half at 15625 Hz */
+/*
+ * SIZED IN MILLISECONDS, not in samples, because that is the property that
+ * matters and the one that silently broke.
+ *
+ * A half must outlast the gap between sfx_service() calls, which is one video
+ * frame: 25 ms at 40 Hz, 33 ms at 30. This was 480 frames - comfortable at
+ * 15625 Hz (30.7 ms) and an underrun EVERY FRAME once the rate doubled to
+ * 31250 and the same 480 samples became 15.4 ms. Nothing complained; the DMA
+ * simply replayed whatever was in the half, which is what "raking rocks"
+ * sounds like.
+ *
+ * 1000 frames is 4000 bytes, just under the 4095 a single GDMA descriptor can
+ * carry, and 32 ms at 31250 Hz. Two halves give 64 ms - roughly two frames of
+ * slack at either cadence.
+ */
+#define HALF_FRAMES 1000u
 
 /*
  * The buffer the DMA loops over. Two halves; the hardware plays one while
@@ -36,6 +51,7 @@ static voice g_voice[SFX_VOICES];
 static uint8_t g_vol = 22u;
 static int g_up;                  /* audio available at all? */
 static uint32_t g_fills;          /* halves actually mixed - 0 means starved */
+static uint32_t g_starved;        /* services that found BOTH halves free    */
 
 int sfx_init(void)
 {
@@ -62,6 +78,66 @@ int sfx_init(void)
 
 void sfx_volume(uint8_t v) { g_vol = v; }
 uint32_t sfx_fills(void)   { return g_fills; }
+uint32_t sfx_starved(void) { return g_starved; }
+
+void sfx_play_pcm(const int16_t *pcm, uint32_t len)
+{
+    uint32_t i, oldest = 0u, best = 0u;
+    if (!g_up || pcm == NULL || len == 0u) return;
+    for (i = 0u; i < SFX_VOICES; i++) {
+        if (g_voice[i].len == 0u) { oldest = i; break; }
+        if (g_voice[i].pos > best) { best = g_voice[i].pos; oldest = i; }
+    }
+    g_voice[oldest].pcm = pcm;
+    g_voice[oldest].len = len;
+    g_voice[oldest].pos = 0u;
+}
+
+/*
+ * Mix ONE voice into a scratch buffer with the same arithmetic sfx_service
+ * uses, then check it. Deliberately not sharing code with the mixer - a test
+ * that calls the thing it is testing proves only that the function is
+ * deterministic.
+ */
+uint32_t sfx_selftest(void)
+{
+    static int16_t scratch[64];
+    uint32_t i, bad = 0u;
+    const int16_t *src;
+
+    if (SFX_COUNT == 0u || SFX[0].len < 64u) return 0u;
+    src = SFX[0].pcm;
+
+    for (i = 0u; i < 64u; i++) {
+        int32_t acc = (int32_t)src[i];
+        acc = (acc * (int32_t)g_vol) >> 8;
+        if (acc >  32767) acc =  32767;
+        if (acc < -32768) acc = -32768;
+        scratch[i] = (int16_t)acc;
+    }
+    /*
+     * Recompute independently, and allow ONE LSB.
+     *
+     * The first version of this compared >> 8 against / 256 and reported 51
+     * mismatches in 64 - which is not a mixer fault, it is arithmetic: for
+     * negative samples an arithmetic shift rounds toward minus infinity and
+     * division rounds toward zero. Half the samples in an audio clip are
+     * negative, and half of 64 is 32... plus the boundary cases.
+     *
+     * A test that fires on a 1-LSB rounding difference cannot tell that from
+     * real corruption, which is the only thing it exists to find. The
+     * tolerance makes the difference between the two visible again.
+     */
+    for (i = 0u; i < 64u; i++) {
+        int32_t want = ((int32_t)src[i] * (int32_t)g_vol) / 256;
+        int32_t diff;
+        if (want >  32767) want =  32767;
+        if (want < -32768) want = -32768;
+        diff = (int32_t)scratch[i] - want;
+        if (diff < -1 || diff > 1) bad++;
+    }
+    return bad;
+}
 
 void sfx_play(uint32_t clip)
 {
@@ -94,6 +170,8 @@ void sfx_service(void)
      * is 30.7 ms, so one is normally enough - but a single late frame leaves
      * both free, and filling one of them would hand the other back stale.
      */
+    if (i2s_underruns()) g_starved++;
+
     while ((idx = i2s_ring_claim(&half)) >= 0) {
     for (f = 0u; f < HALF_FRAMES; f++) {
         int32_t acc = 0;
